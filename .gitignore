@@ -1,0 +1,15 @@
+# Rust
+/target/
+# Gradle / Android
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+*.idsig
+*.jks
+*.keystore
+# Dev tooling output
+/dist/
+.idea/
+*.iml
