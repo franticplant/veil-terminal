@@ -33,7 +33,7 @@ scripts/build dev          # unsigned dev APK (first run builds the container im
 scripts/sign dev           # sign into dist/, verify the signer, run the release checks
 scripts/podman-run cargo test --workspace
 scripts/podman-run cargo deny check
-scripts/podman-run ./android/gradlew -p android testProdReleaseUnitTest ktfmtCheck
+scripts/podman-run ./android/gradlew -p android testDebugUnitTest ktfmtCheck
 ```
 
 `dev` and `prod` share the application ID and signing key, so either installs over the other

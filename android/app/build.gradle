@@ -18,7 +18,7 @@ android {
         // Permanent: the package identity every build, dev or release, shares.
         applicationId = 'io.github.franticplant.veil'
         minSdk = 34
-        targetSdk = 36
+        targetSdk = 37
         versionCode = versionCodeEnv.map { it.toInteger() }.getOrElse(1)
         versionName = versionNameEnv.getOrElse('0.0.0-local')
 

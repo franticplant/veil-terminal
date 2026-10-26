@@ -1,6 +1,6 @@
 package io.github.franticplant.veil.frontend
 
-import io.github.franticplant.veil.engine.EngineBackend
+import io.github.franticplant.veil.engine.SessionRegistry
 
 /**
  * What the frontend needs from the app it runs in. The Application implements it; the frontend
@@ -8,8 +8,11 @@ import io.github.franticplant.veil.engine.EngineBackend
  * does not touch this module.
  */
 interface EngineHost {
-  val engineBackend: EngineBackend
-  val buildInfo: BuildInfo
+    /** The app's sessions; they outlive any screen. */
+    val sessions: SessionRegistry
+    val buildInfo: BuildInfo
+    /** Where sessions run, for display ("local", later "vm"). */
+    val backendKind: String
 }
 
 /** Shown to the user; [devTools] builds carry the development control plane. */

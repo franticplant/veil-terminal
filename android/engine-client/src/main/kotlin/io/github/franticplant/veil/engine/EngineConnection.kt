@@ -48,125 +48,137 @@ class EngineClosedException(message: String) : Exception(message)
 class EngineConnection private constructor(private val pipe: MessagePipe, scope: CoroutineScope) :
     AutoCloseable {
 
-  sealed interface State {
-    data object Open : State
+    sealed interface State {
+        data object Open : State
 
-    data class Closed(val reason: String) : State
-  }
+        data class Closed(val reason: String) : State
+    }
 
-  private val nextId = AtomicLong(1)
-  private val pending = ConcurrentHashMap<Long, CompletableDeferred<EngineMsg>>()
-  private val _events = MutableSharedFlow<EngineMsg>(extraBufferCapacity = 64)
-  private val _state = MutableStateFlow<State>(State.Open)
+    private val nextId = AtomicLong(1)
+    private val pending = ConcurrentHashMap<Long, CompletableDeferred<EngineMsg>>()
+    // Events are not dropped: when the buffer is full the reader stops reading,
+    // which stops the engine (its queue fills). Something must collect events
+    // for the connection to make progress; SessionRegistry does.
+    private val _events = MutableSharedFlow<EngineMsg>(extraBufferCapacity = 256)
+    private val _state = MutableStateFlow<State>(State.Open)
 
-  /** Engine-initiated messages (`request_id` 0). */
-  val events: SharedFlow<EngineMsg> = _events
+    /** Engine-initiated messages (`request_id` 0). */
+    val events: SharedFlow<EngineMsg> = _events
 
-  val state: StateFlow<State> = _state
+    val state: StateFlow<State> = _state
 
-  /** The engine's handshake reply: negotiated version, engine build, limits. */
-  lateinit var hello: HelloAck
-    private set
+    /** The engine's handshake reply: negotiated version, engine build, limits. */
+    lateinit var hello: HelloAck
+        private set
 
-  private val reader: Job = scope.launch(Dispatchers.IO) { readLoop() }
+    private val reader: Job = scope.launch(Dispatchers.IO) { readLoop() }
 
-  /** Sends [msg] with a fresh request ID and waits for the matching reply. */
-  suspend fun request(msg: ClientMsg.Builder): EngineMsg {
-    (state.value as? State.Closed)?.let { throw EngineClosedException(it.reason) }
-    val id = nextId.getAndIncrement()
-    val reply = CompletableDeferred<EngineMsg>()
-    pending[id] = reply
-    try {
-      val bytes = msg.setRequestId(id).build().toByteArray()
-      withContext(Dispatchers.IO) {
+    /** Sends [msg] with a fresh request ID and waits for the matching reply. */
+    suspend fun request(msg: ClientMsg.Builder): EngineMsg {
+        (state.value as? State.Closed)?.let { throw EngineClosedException(it.reason) }
+        val id = nextId.getAndIncrement()
+        val reply = CompletableDeferred<EngineMsg>()
+        pending[id] = reply
         try {
-          pipe.send(bytes)
-        } catch (e: PipeClosedException) {
-          shutDown(e.message ?: "engine closed")
+            val bytes = msg.setRequestId(id).build().toByteArray()
+            withContext(Dispatchers.IO) {
+                try {
+                    pipe.send(bytes)
+                } catch (e: PipeClosedException) {
+                    shutDown(e.message ?: "engine closed")
+                }
+            }
+            return reply.await()
+        } finally {
+            pending.remove(id)
         }
-      }
-      return reply.await()
-    } finally {
-      pending.remove(id)
     }
-  }
 
-  /** A round trip to the engine. */
-  suspend fun ping(nonce: Long): Pong {
-    val reply = request(ClientMsg.newBuilder().setPing(Ping.newBuilder().setNonce(nonce)))
-    return reply.expect(EngineMsg.BodyCase.PONG).pong
-  }
-
-  override fun close() {
-    shutDown("closed by client")
-    reader.cancel()
-    pipe.close()
-  }
-
-  private suspend fun readLoop() {
-    while (currentCoroutineContext().isActive && state.value == State.Open) {
-      val buf =
-          try {
-            pipe.recv(RECV_POLL_MS) ?: continue
-          } catch (e: PipeClosedException) {
-            shutDown(e.message ?: "engine closed")
-            return
-          }
-      if (buf.size > MAX_MESSAGE_BYTES) {
-        shutDown("engine sent a ${buf.size}-byte message, over the $MAX_MESSAGE_BYTES limit")
-        return
-      }
-      val msg =
-          try {
-            EngineMsg.parseFrom(buf)
-          } catch (e: InvalidProtocolBufferException) {
-            shutDown("engine sent a malformed message: ${e.message}")
-            return
-          }
-      if (msg.requestId == 0L) {
-        _events.tryEmit(msg)
-      } else {
-        // A reply to nothing we are waiting for (late, or invented) is dropped.
-        pending.remove(msg.requestId)?.complete(msg)
-      }
+    /** A round trip to the engine. */
+    suspend fun ping(nonce: Long): Pong {
+        val reply = request(ClientMsg.newBuilder().setPing(Ping.newBuilder().setNonce(nonce)))
+        return reply.expect(EngineMsg.BodyCase.PONG).pong
     }
-  }
 
-  private fun shutDown(reason: String) {
-    if (_state.value is State.Closed) return
-    _state.value = State.Closed(reason)
-    val error = EngineClosedException(reason)
-    pending.values.forEach { it.completeExceptionally(error) }
-  }
-
-  companion object {
-    private const val RECV_POLL_MS = 250
-
-    /** Opens a connection over [pipe] and performs the Hello handshake. */
-    suspend fun open(pipe: MessagePipe, clientName: String, scope: CoroutineScope): EngineConnection {
-      val conn = EngineConnection(pipe, scope)
-      try {
-        val reply =
-            conn.request(
-                ClientMsg.newBuilder()
-                    .setHello(
-                        Hello.newBuilder()
-                            .setProtocolVersion(PROTOCOL_VERSION)
-                            .setClientName(clientName)))
-        conn.hello = reply.expect(EngineMsg.BodyCase.HELLO_ACK).helloAck
-        return conn
-      } catch (e: Exception) {
-        conn.close()
-        throw e
-      }
+    override fun close() {
+        shutDown("closed by client")
+        reader.cancel()
+        pipe.close()
     }
-  }
+
+    private suspend fun readLoop() {
+        while (currentCoroutineContext().isActive && state.value == State.Open) {
+            val buf =
+                try {
+                    pipe.recv(RECV_POLL_MS) ?: continue
+                } catch (e: PipeClosedException) {
+                    shutDown(e.message ?: "engine closed")
+                    return
+                }
+            if (buf.size > MAX_MESSAGE_BYTES) {
+                shutDown(
+                    "engine sent a ${buf.size}-byte message, over the $MAX_MESSAGE_BYTES limit"
+                )
+                return
+            }
+            val msg =
+                try {
+                    EngineMsg.parseFrom(buf)
+                } catch (e: InvalidProtocolBufferException) {
+                    shutDown("engine sent a malformed message: ${e.message}")
+                    return
+                }
+            if (msg.requestId == 0L) {
+                _events.emit(msg)
+            } else {
+                // A reply to nothing we are waiting for (late, or invented) is dropped.
+                pending.remove(msg.requestId)?.complete(msg)
+            }
+        }
+    }
+
+    private fun shutDown(reason: String) {
+        if (_state.value is State.Closed) return
+        _state.value = State.Closed(reason)
+        val error = EngineClosedException(reason)
+        pending.values.forEach { it.completeExceptionally(error) }
+    }
+
+    companion object {
+        private const val RECV_POLL_MS = 250
+
+        /** Opens a connection over [pipe] and performs the Hello handshake. */
+        suspend fun open(
+            pipe: MessagePipe,
+            clientName: String,
+            scope: CoroutineScope,
+        ): EngineConnection {
+            val conn = EngineConnection(pipe, scope)
+            try {
+                val reply =
+                    conn.request(
+                        ClientMsg.newBuilder()
+                            .setHello(
+                                Hello.newBuilder()
+                                    .setProtocolVersion(PROTOCOL_VERSION)
+                                    .setClientName(clientName)
+                            )
+                    )
+                conn.hello = reply.expect(EngineMsg.BodyCase.HELLO_ACK).helloAck
+                return conn
+            } catch (e: Exception) {
+                conn.close()
+                throw e
+            }
+        }
+    }
 }
 
 /** Returns this message if its body is [case]; throws the engine's error, or a mismatch. */
 fun EngineMsg.expect(case: EngineMsg.BodyCase): EngineMsg =
     when (bodyCase) {
-      case -> this
-      EngineMsg.BodyCase.ERROR -> throw EngineException(error.code, error.detail)
-      else -> throw EngineException(ErrorCode.ERROR_CODE_PROTOCOL, "expected $case, got $bodyCase")
+        case -> this
+        EngineMsg.BodyCase.ERROR -> throw EngineException(error.code, error.detail)
+        else ->
+            throw EngineException(ErrorCode.ERROR_CODE_PROTOCOL, "expected $case, got $bodyCase")
     }

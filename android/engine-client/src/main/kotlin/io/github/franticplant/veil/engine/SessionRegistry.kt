@@ -1,0 +1,272 @@
+package io.github.franticplant.veil.engine
+
+import com.google.protobuf.ByteString
+import io.github.franticplant.veil.engine.proto.AuthAnswer
+import io.github.franticplant.veil.engine.proto.AuthPrompt
+import io.github.franticplant.veil.engine.proto.ClientMsg
+import io.github.franticplant.veil.engine.proto.CloseSession
+import io.github.franticplant.veil.engine.proto.EngineMsg
+import io.github.franticplant.veil.engine.proto.FrameAck
+import io.github.franticplant.veil.engine.proto.HostKeyAnswer
+import io.github.franticplant.veil.engine.proto.HostKeyDecision
+import io.github.franticplant.veil.engine.proto.HostKeyPrompt
+import io.github.franticplant.veil.engine.proto.Input
+import io.github.franticplant.veil.engine.proto.OpenSession
+import io.github.franticplant.veil.engine.proto.RequestSnapshot
+import io.github.franticplant.veil.engine.proto.Resize
+import io.github.franticplant.veil.engine.proto.Scroll
+import io.github.franticplant.veil.engine.proto.SessionPhase
+import io.github.franticplant.veil.engine.proto.TermSize
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
+/** Where a session connects. Holds no secrets. */
+data class Target(val host: String, val port: Int, val username: String, val label: String = "") {
+    val displayName: String
+        get() = label.ifEmpty { if (port == 22) "$username@$host" else "$username@$host:$port" }
+}
+
+/**
+ * The open sessions of this app, over one engine connection. It outlives any screen: the UI
+ * observes it and can come and go.
+ *
+ * The registry is the frontend side of the session layer and holds no UI concepts. It owns the
+ * engine connection's event stream, routes events to their [Session], and acknowledges frames once
+ * they are in the session's [ScreenModel].
+ */
+class SessionRegistry(private val backend: EngineBackend, private val scope: CoroutineScope) {
+    private val connectLock = Mutex()
+    @Volatile private var conn: EngineConnection? = null
+    private val byId = ConcurrentHashMap<Long, Session>()
+    private val _sessions = MutableStateFlow<List<Session>>(emptyList())
+
+    /** Sessions in the order they were opened, closed ones included until [forget]. */
+    val sessions: StateFlow<List<Session>> = _sessions
+
+    /** The engine connection, opened on first use (and again if the engine went away). */
+    suspend fun connection(): EngineConnection = connectLock.withLock {
+        conn?.takeIf { it.state.value == EngineConnection.State.Open }
+            ?: backend.connect("veil-frontend", scope).also { c ->
+                conn = c
+                scope.launch { c.events.collect { dispatch(it) } }
+                scope.launch {
+                    c.state.collect { s ->
+                        if (s is EngineConnection.State.Closed) {
+                            byId.values.forEach {
+                                it.engineGone("engine connection lost: ${s.reason}")
+                            }
+                        }
+                    }
+                }
+            }
+    }
+
+    /** Opens a session to [target] with a [cols] x [rows] terminal. */
+    suspend fun open(target: Target, cols: Int, rows: Int): Session {
+        val c = connection()
+        val reply =
+            c.request(
+                ClientMsg.newBuilder()
+                    .setOpenSession(
+                        OpenSession.newBuilder()
+                            .setHost(target.host)
+                            .setPort(target.port)
+                            .setUsername(target.username)
+                            .setSize(TermSize.newBuilder().setCols(cols).setRows(rows))
+                    )
+            )
+        val id = reply.expect(EngineMsg.BodyCase.SESSION_OPENED).sessionOpened.sessionId
+        val session = Session(id, target, c, this)
+        byId[id] = session
+        _sessions.value = _sessions.value + session
+        return session
+    }
+
+    /** Removes a closed session from [sessions]. */
+    fun forget(session: Session) {
+        byId.remove(session.id)
+        _sessions.value = _sessions.value - session
+    }
+
+    private fun dispatch(msg: EngineMsg) {
+        when (msg.bodyCase) {
+            EngineMsg.BodyCase.SESSION_STATE ->
+                byId[msg.sessionState.sessionId]?.onState(
+                    msg.sessionState.phase,
+                    msg.sessionState.detail,
+                )
+            EngineMsg.BodyCase.HOST_KEY_PROMPT ->
+                byId[msg.hostKeyPrompt.sessionId]?.onPrompt(Prompt.HostKey(msg.hostKeyPrompt))
+            EngineMsg.BodyCase.AUTH_PROMPT ->
+                byId[msg.authPrompt.sessionId]?.onPrompt(Prompt.Auth(msg.authPrompt))
+            EngineMsg.BodyCase.FRAME -> byId[msg.frame.sessionId]?.onFrame(msg.frame)
+            EngineMsg.BodyCase.BELL -> byId[msg.bell.sessionId]?.onBell()
+            else -> {}
+        }
+    }
+
+    internal fun launch(block: suspend CoroutineScope.() -> Unit) {
+        scope.launch(block = block)
+    }
+}
+
+/** Something the engine needs a human to decide. */
+sealed interface Prompt {
+    data class HostKey(val prompt: HostKeyPrompt) : Prompt
+
+    data class Auth(val prompt: AuthPrompt) : Prompt
+}
+
+/** Where a session is in its life; [detail] explains a CLOSED one. */
+data class SessionStatus(val phase: SessionPhase, val detail: String = "") {
+    val closed: Boolean
+        get() = phase == SessionPhase.SESSION_PHASE_CLOSED
+}
+
+/** One SSH session, as the frontend sees it. */
+class Session
+internal constructor(
+    val id: Long,
+    val target: Target,
+    private val conn: EngineConnection,
+    private val registry: SessionRegistry,
+) {
+    private val _status = MutableStateFlow(SessionStatus(SessionPhase.SESSION_PHASE_CONNECTING))
+    private val _prompt = MutableStateFlow<Prompt?>(null)
+    private val _screenVersion = MutableStateFlow(0L)
+    private val _bell = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    val status: StateFlow<SessionStatus> = _status
+
+    /** The open prompt, if the engine is waiting for one. */
+    val prompt: StateFlow<Prompt?> = _prompt
+
+    /** The screen. Read it under `synchronized(screen)`. */
+    val screen = ScreenModel()
+
+    /** Changes whenever [screen] does: observe it to redraw. */
+    val screenVersion: StateFlow<Long> = _screenVersion
+
+    val bell: SharedFlow<Unit> = _bell
+
+    fun input(bytes: ByteArray) {
+        if (bytes.isEmpty() || _status.value.closed) return
+        send(
+            ClientMsg.newBuilder()
+                .setInput(Input.newBuilder().setSessionId(id).setData(ByteString.copyFrom(bytes)))
+        )
+    }
+
+    fun resize(cols: Int, rows: Int) {
+        if (_status.value.closed) return
+        send(
+            ClientMsg.newBuilder()
+                .setResize(
+                    Resize.newBuilder()
+                        .setSessionId(id)
+                        .setSize(TermSize.newBuilder().setCols(cols).setRows(rows))
+                )
+        )
+    }
+
+    /** Scrolls [lines] into history (negative: towards the live screen). */
+    fun scroll(lines: Int) {
+        if (_status.value.closed || lines == 0) return
+        send(ClientMsg.newBuilder().setScroll(Scroll.newBuilder().setSessionId(id).setLines(lines)))
+    }
+
+    fun scrollToBottom() {
+        if (_status.value.closed) return
+        send(
+            ClientMsg.newBuilder().setScroll(Scroll.newBuilder().setSessionId(id).setToBottom(true))
+        )
+    }
+
+    /** Asks for a full frame (e.g. a new screen started showing this session). */
+    fun requestSnapshot() {
+        if (_status.value.closed) return
+        send(
+            ClientMsg.newBuilder().setRequestSnapshot(RequestSnapshot.newBuilder().setSessionId(id))
+        )
+    }
+
+    fun answerHostKey(prompt: HostKeyPrompt, decision: HostKeyDecision) {
+        _prompt.compareAndSet(Prompt.HostKey(prompt), null)
+        send(
+            ClientMsg.newBuilder()
+                .setHostKeyAnswer(
+                    HostKeyAnswer.newBuilder()
+                        .setSessionId(id)
+                        .setPromptId(prompt.promptId)
+                        .setDecision(decision)
+                )
+        )
+    }
+
+    /** Answers an auth prompt with one response per field, or cancels it. */
+    fun answerAuth(prompt: AuthPrompt, responses: List<String>?) {
+        _prompt.compareAndSet(Prompt.Auth(prompt), null)
+        val answer = AuthAnswer.newBuilder().setSessionId(id).setPromptId(prompt.promptId)
+        if (responses == null) answer.setCancel(true) else answer.addAllResponses(responses)
+        send(ClientMsg.newBuilder().setAuthAnswer(answer))
+    }
+
+    fun close() {
+        if (_status.value.closed) return
+        send(ClientMsg.newBuilder().setCloseSession(CloseSession.newBuilder().setSessionId(id)))
+    }
+
+    /** Sends a request; a refusal is surfaced as the session's detail, not thrown. */
+    private fun send(msg: ClientMsg.Builder) {
+        registry.launch {
+            try {
+                conn.request(msg)
+            } catch (e: EngineClosedException) {
+                engineGone(e.message ?: "engine closed")
+            } catch (e: EngineException) {
+                // e.g. input refused while the session is busy; the session goes on.
+            }
+        }
+    }
+
+    internal fun onState(phase: SessionPhase, detail: String) {
+        _status.value = SessionStatus(phase, detail)
+        if (phase == SessionPhase.SESSION_PHASE_CLOSED) _prompt.value = null
+    }
+
+    internal fun onPrompt(p: Prompt) {
+        _prompt.value = p
+    }
+
+    internal fun onFrame(frame: io.github.franticplant.veil.engine.proto.Frame) {
+        try {
+            synchronized(screen) { screen.apply(frame) }
+        } catch (e: InvalidFrameException) {
+            // The engine broke the render contract. Treat it as hostile: stop
+            // listening to this session.
+            onState(SessionPhase.SESSION_PHASE_CLOSED, "engine sent an invalid frame: ${e.message}")
+            send(ClientMsg.newBuilder().setCloseSession(CloseSession.newBuilder().setSessionId(id)))
+            return
+        }
+        _screenVersion.value = frame.seq
+        send(
+            ClientMsg.newBuilder()
+                .setFrameAck(FrameAck.newBuilder().setSessionId(id).setSeq(frame.seq))
+        )
+    }
+
+    internal fun onBell() {
+        _bell.tryEmit(Unit)
+    }
+
+    internal fun engineGone(reason: String) {
+        if (!_status.value.closed) onState(SessionPhase.SESSION_PHASE_CLOSED, reason)
+    }
+}

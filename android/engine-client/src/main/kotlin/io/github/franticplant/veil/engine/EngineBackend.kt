@@ -10,11 +10,11 @@ import kotlinx.coroutines.withContext
  * same [EngineConnection], speaking the same protocol over some [MessagePipe].
  */
 interface EngineBackend {
-  /** A short name for what this backend is, e.g. "local", for diagnostics. */
-  val kind: String
+    /** A short name for what this backend is, e.g. "local", for diagnostics. */
+    val kind: String
 
-  /** Opens a connection and completes the Hello handshake. */
-  suspend fun connect(clientName: String, scope: CoroutineScope): EngineConnection
+    /** Opens a connection and completes the Hello handshake. */
+    suspend fun connect(clientName: String, scope: CoroutineScope): EngineConnection
 }
 
 /**
@@ -23,14 +23,14 @@ interface EngineBackend {
  */
 class LocalBackend(private val engineVersion: String, private val dataDir: java.io.File) :
     EngineBackend {
-  override val kind = "local"
+    override val kind = "local"
 
-  override suspend fun connect(clientName: String, scope: CoroutineScope): EngineConnection {
-    val pipe =
-        withContext(Dispatchers.IO) {
-          dataDir.mkdirs()
-          NativePipe.open(engineVersion, dataDir.path)
-        }
-    return EngineConnection.open(pipe, clientName, scope)
-  }
+    override suspend fun connect(clientName: String, scope: CoroutineScope): EngineConnection {
+        val pipe =
+            withContext(Dispatchers.IO) {
+                dataDir.mkdirs()
+                NativePipe.open(engineVersion, dataDir.path)
+            }
+        return EngineConnection.open(pipe, clientName, scope)
+    }
 }

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A prompt (">_") on the adaptive-icon safe zone. Drawn for Veil; no third-party art. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M36,40 L50,54 L36,68"
+        android:strokeColor="#E6E6E6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="6" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M56,68 L74,68"
+        android:strokeColor="#7FD1A8"
+        android:strokeLineCap="round"
+        android:strokeWidth="6" />
+</vector>

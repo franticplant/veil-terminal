@@ -12,7 +12,13 @@ plugins {
 // ktfmtCheck / ktfmtFormat over every module's Kotlin sources, with the
 // formatter pinned in the version catalog.
 configurations {
-    ktfmtCli
+    ktfmtCli {
+        // ktfmt publishes a plain and a shadowed (self-contained) jar; the
+        // shadowed one keeps its dependencies off this build's classpath.
+        attributes {
+            attribute(Bundling.BUNDLING_ATTRIBUTE, objects.named(Bundling, Bundling.SHADOWED))
+        }
+    }
 }
 
 dependencies {

@@ -52,7 +52,7 @@ jobs:
       - name: Build APKs (unsigned)
         run: scripts/build all
       - name: Kotlin format, unit tests, lint
-        run: scripts/podman-run ./android/gradlew -p android --console=plain ktfmtCheck testProdReleaseUnitTest lintProdRelease lintDevRelease
+        run: scripts/podman-run ./android/gradlew -p android --console=plain ktfmtCheck testDebugUnitTest lintProdRelease lintDevRelease
       - name: Release check (prod must carry no dev pieces)
         run: scripts/podman-run --offline scripts/check-release-apk.sh android/app/build/outputs/apk/prod/release/app-prod-release-unsigned.apk
       - name: Release check, inverted (dev must still be recognised)
