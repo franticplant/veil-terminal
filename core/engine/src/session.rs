@@ -13,6 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 use veil_protocol::{MAX_FRAMES_IN_FLIGHT, encode, v1};
 use veil_term::{TermEvent, Terminal};
 
+use crate::obs::{LogRing, SessionStats};
 use crate::ssh::{self, Client, Dialer};
 
 /// How long a prompt waits for the frontend before giving up.
@@ -38,6 +39,8 @@ pub(crate) struct Prompter {
     pub out: mpsc::Sender<Vec<u8>>,
     pub prompts: Prompts,
     pub next_prompt: Arc<AtomicU64>,
+    pub stats: Arc<SessionStats>,
+    pub log: Arc<LogRing>,
 }
 
 impl Prompter {
@@ -51,7 +54,19 @@ impl Prompter {
         let _ = self.out.send(encode(&msg)).await;
     }
 
+    pub fn log(&self, level: v1::LogLevel, component: &str, message: &str) {
+        self.log.log(level, component, self.session_id, message);
+    }
+
     pub async fn state(&self, phase: v1::SessionPhase, detail: &str) {
+        self.stats.set_phase(phase);
+        let name = phase.as_str_name().trim_start_matches("SESSION_PHASE_");
+        let message = if detail.is_empty() {
+            name.to_string()
+        } else {
+            format!("{name}: {detail}")
+        };
+        self.log(v1::LogLevel::Info, "session", &message);
         self.event(v1::engine_msg::Body::SessionState(v1::SessionState {
             session_id: self.session_id,
             phase: phase as i32,
@@ -192,9 +207,11 @@ async fn run_inner(
         tokio::select! {
             msg = channel.wait() => match msg {
                 Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    SessionStats::add(&prompter.stats.bytes_from_remote, data.len() as u64);
                     for event in term.feed(&data) {
                         match event {
                             TermEvent::Reply(bytes) => {
+                                SessionStats::add(&prompter.stats.bytes_to_remote, bytes.len() as u64);
                                 channel.data_bytes(bytes).await.map_err(err("send failed"))?;
                             }
                             TermEvent::Bell => {
@@ -216,10 +233,12 @@ async fn run_inner(
                 None => break "closed".to_string(),
                 Some(Command::Input(bytes)) => {
                     term.scroll_to_bottom();
+                    SessionStats::add(&prompter.stats.bytes_to_remote, bytes.len() as u64);
                     channel.data_bytes(bytes).await.map_err(err("send failed"))?;
                 }
                 Some(Command::Resize(cols, rows)) => {
                     term.resize(cols, rows);
+                    prompter.stats.set_size(cols, rows);
                     channel
                         .window_change(cols as u32, rows as u32, 0, 0)
                         .await
@@ -227,7 +246,10 @@ async fn run_inner(
                 }
                 Some(Command::Scroll(lines)) => term.scroll(lines),
                 Some(Command::ScrollToBottom) => term.scroll_to_bottom(),
-                Some(Command::FrameAck(seq)) => acked = acked.max(seq.min(sent)),
+                Some(Command::FrameAck(seq)) => {
+                    acked = acked.max(seq.min(sent));
+                    SessionStats::add(&prompter.stats.frames_acked, 1);
+                }
                 Some(Command::Snapshot) => {
                     // The frontend lost its state: earlier frames no longer
                     // count against the credit.
@@ -241,6 +263,7 @@ async fn run_inner(
         {
             frame.session_id = prompter.session_id;
             sent = frame.seq;
+            SessionStats::add(&prompter.stats.frames_sent, 1);
             prompter.event(v1::engine_msg::Body::Frame(frame)).await;
         }
     };

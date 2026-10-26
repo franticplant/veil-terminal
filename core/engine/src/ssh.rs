@@ -65,6 +65,7 @@ pub(crate) struct Client {
 
 impl Client {
     fn refuse(&self, why: String) -> Result<bool, russh::Error> {
+        self.prompter.log(v1::LogLevel::Warn, "hostkeys", &why);
         *self.refusal.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
         Ok(false)
     }
@@ -88,7 +89,14 @@ impl client::Handler for Client {
         let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
         if let Some(path) = &self.known_hosts {
             match check_known_hosts_path(&self.host, self.port, key, path) {
-                Ok(true) => return Ok(true),
+                Ok(true) => {
+                    self.prompter.log(
+                        v1::LogLevel::Debug,
+                        "hostkeys",
+                        &format!("known {} key {fingerprint}", key.algorithm()),
+                    );
+                    return Ok(true);
+                }
                 Ok(false) => {}
                 Err(russh::keys::Error::KeyChanged { line }) => {
                     return self.refuse(format!(
@@ -122,13 +130,25 @@ impl client::Handler for Client {
             })
             .await;
         match answer {
-            Some(Answer::HostKey(v1::HostKeyDecision::AcceptOnce)) => Ok(true),
+            Some(Answer::HostKey(v1::HostKeyDecision::AcceptOnce)) => {
+                self.prompter.log(
+                    v1::LogLevel::Info,
+                    "hostkeys",
+                    &format!("accepted {fingerprint} once"),
+                );
+                Ok(true)
+            }
             Some(Answer::HostKey(v1::HostKeyDecision::AcceptAndRemember)) => {
                 if let Some(path) = &self.known_hosts
                     && let Err(e) = learn_known_hosts_path(&self.host, self.port, key, path)
                 {
                     return self.refuse(format!("cannot record the host key: {e}"));
                 }
+                self.prompter.log(
+                    v1::LogLevel::Info,
+                    "hostkeys",
+                    &format!("accepted and recorded {fingerprint}"),
+                );
                 Ok(true)
             }
             Some(_) => self.refuse("host key rejected".into()),

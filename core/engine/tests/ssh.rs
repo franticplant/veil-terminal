@@ -359,6 +359,49 @@ fn interactive_session_end_to_end() {
     f.wait_screen("[resized 60x12]");
     assert_eq!(f.screen.len(), 12);
 
+    // Diagnostics: the live session's counters, the log, the recorded key.
+    let stats = match f.call(client_msg::Body::GetStats(v1::GetStats {})).body {
+        Some(engine_msg::Body::EngineStats(s)) => s,
+        other => panic!("expected EngineStats, got {other:?}"),
+    };
+    assert_eq!(stats.sessions_opened, 1);
+    let s = &stats.sessions[0];
+    assert_eq!((s.session_id, s.username.as_str()), (session, "alice"));
+    assert_eq!(s.phase, v1::SessionPhase::Open as i32);
+    assert_eq!(s.size, Some(v1::TermSize { cols: 60, rows: 12 }));
+    assert!(s.bytes_from_remote > 0 && s.bytes_to_remote > 0 && s.frames_sent > 0);
+    let logs = match f
+        .call(client_msg::Body::GetLogs(v1::GetLogs::default()))
+        .body
+    {
+        Some(engine_msg::Body::LogBatch(b)) => b,
+        other => panic!("expected LogBatch, got {other:?}"),
+    };
+    let text: Vec<_> = logs.entries.iter().map(|e| e.message.as_str()).collect();
+    assert!(
+        text.iter()
+            .any(|m| m.starts_with("accepted and recorded SHA256:")),
+        "{text:?}"
+    );
+    assert!(text.contains(&"OPEN"), "{text:?}");
+    assert!(
+        !text.iter().any(|m| m.contains(PASSWORD)),
+        "a log holds the password"
+    );
+    let keys = match f
+        .call(client_msg::Body::ListHostKeys(v1::ListHostKeys {}))
+        .body
+    {
+        Some(engine_msg::Body::HostKeyList(l)) => l.entries,
+        other => panic!("expected HostKeyList, got {other:?}"),
+    };
+    assert_eq!(keys.len(), 1);
+    assert_eq!(
+        (keys[0].host.as_str(), keys[0].port),
+        ("127.0.0.1", port as u32)
+    );
+    assert_eq!(keys[0].fingerprint, prompt.fingerprint);
+
     f.input(session, "exit\r");
     let closed = f.state(v1::SessionPhase::Closed);
     assert!(closed.detail.contains("status 3"), "{}", closed.detail);
@@ -387,6 +430,20 @@ fn interactive_session_end_to_end() {
         data: b"x".to_vec(),
     }));
     assert!(matches!(gone.body, Some(engine_msg::Body::Error(_))));
+
+    // Forgetting the key brings the prompt back.
+    let ack = f.call(client_msg::Body::ForgetHostKey(v1::ForgetHostKey {
+        host: "127.0.0.1".into(),
+        port: port as u32,
+    }));
+    assert!(
+        matches!(ack.body, Some(engine_msg::Body::Ack(_))),
+        "{ack:?}"
+    );
+    f.open(port);
+    f.wait_for("host key prompt after forgetting", |m| {
+        matches!(m.body, Some(engine_msg::Body::HostKeyPrompt(_)))
+    });
     drop(rt);
 }
 

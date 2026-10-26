@@ -34,6 +34,10 @@ message ClientMsg {
     CloseSession close_session = 18;
     FrameAck frame_ack = 19;
     RequestSnapshot request_snapshot = 20;
+    GetStats get_stats = 21;
+    GetLogs get_logs = 22;
+    ListHostKeys list_host_keys = 23;
+    ForgetHostKey forget_host_key = 24;
   }
 }
 
@@ -48,6 +52,9 @@ message EngineMsg {
     SessionOpened session_opened = 13;
     // Success reply to a request that returns nothing else.
     Ack ack = 14;
+    EngineStats engine_stats = 15;
+    LogBatch log_batch = 16;
+    HostKeyList host_key_list = 17;
 
     // Events (request_id 0).
     SessionState session_state = 20;
@@ -365,4 +372,99 @@ message Modes {
 
 message Bell {
   uint64 session_id = 1;
+}
+
+// ---- Diagnostics ---------------------------------------------------------
+//
+// What the engine can tell about itself. Nothing here carries secrets or
+// screen content; a frontend may show all of it.
+
+message GetStats {}
+
+message EngineStats {
+  uint64 uptime_ms = 1;
+  // Live sessions on this connection.
+  repeated SessionStats sessions = 2;
+  // Since the connection started.
+  uint64 sessions_opened = 3;
+  uint64 requests = 4;
+  uint64 malformed_requests = 5;
+  // The newest log entry's seq (0: none yet).
+  uint64 last_log_seq = 6;
+}
+
+message SessionStats {
+  uint64 session_id = 1;
+  string host = 2;
+  uint32 port = 3;
+  string username = 4;
+  SessionPhase phase = 5;
+  TermSize size = 6;
+  uint64 age_ms = 7;
+  // Channel payload bytes, not counting SSH framing.
+  uint64 bytes_from_remote = 8;
+  uint64 bytes_to_remote = 9;
+  uint64 frames_sent = 10;
+  uint64 frames_acked = 11;
+}
+
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_LEVEL_DEBUG = 1;
+  LOG_LEVEL_INFO = 2;
+  LOG_LEVEL_WARN = 3;
+  LOG_LEVEL_ERROR = 4;
+}
+
+// Reads the engine's log ring: entries with seq > after_seq, oldest first.
+message GetLogs {
+  uint64 after_seq = 1;
+  // At most this many entries (0 or over 1000: 1000).
+  uint32 max = 2;
+  // Entries below this level are skipped.
+  LogLevel min_level = 3;
+}
+
+// Log messages never contain secrets, typed input or screen content.
+message LogEntry {
+  uint64 seq = 1;
+  // Wall-clock time, milliseconds since the Unix epoch.
+  uint64 unix_ms = 2;
+  LogLevel level = 3;
+  // e.g. "connection", "session", "ssh", "hostkeys".
+  string component = 4;
+  // 0 when the entry belongs to no session.
+  uint64 session_id = 5;
+  string message = 6;
+}
+
+message LogBatch {
+  repeated LogEntry entries = 1;
+  // Pass as after_seq to continue.
+  uint64 next_seq = 2;
+  // Entries after after_seq that the ring had already dropped.
+  uint64 dropped = 3;
+}
+
+// ---- Known hosts ----------------------------------------------------------
+
+message ListHostKeys {}
+
+message HostKeyEntry {
+  // As recorded; "(hashed)" for a hashed entry.
+  string host = 1;
+  uint32 port = 2;
+  string algorithm = 3;
+  string fingerprint = 4;
+}
+
+message HostKeyList {
+  repeated HostKeyEntry entries = 1;
+}
+
+// Removes every recorded key for host and port (0 means 22). Acked even when
+// nothing was recorded.
+message ForgetHostKey {
+  string host = 1;
+  uint32 port = 2;
 }

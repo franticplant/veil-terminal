@@ -11,6 +11,8 @@
 //! engine handles blocks in `send`; an engine whose output is not read stops
 //! producing until `recv` drains it.
 
+mod hostkeys;
+mod obs;
 mod session;
 mod ssh;
 
@@ -28,6 +30,7 @@ use veil_protocol::{
     MAX_INPUT_BYTES, MAX_SESSIONS, PROTOCOL_VERSION, check_size, decode_client, encode, error_msg,
 };
 
+use obs::{LogRing, SessionStats};
 use session::{Answer, Command, Prompter, Prompts};
 pub use ssh::{Dialer, DirectDialer};
 
@@ -121,6 +124,7 @@ impl Engine {
 struct SessionHandle {
     commands: mpsc::Sender<Command>,
     prompts: Prompts,
+    stats: Arc<SessionStats>,
     task: JoinHandle<()>,
 }
 
@@ -134,10 +138,14 @@ struct Connection {
     sessions: HashMap<u64, SessionHandle>,
     next_session: u64,
     next_prompt: Arc<AtomicU64>,
+    log: Arc<LogRing>,
+    requests: u64,
+    malformed_requests: u64,
 }
 
 impl Connection {
     fn new(config: EngineConfig, out: mpsc::Sender<Vec<u8>>) -> Self {
+        let log = Arc::new(LogRing::new());
         let env = Arc::new(session::Env {
             dialer: config.dialer.clone().unwrap_or_else(|| {
                 Arc::new(DirectDialer {
@@ -155,6 +163,9 @@ impl Connection {
             sessions: HashMap::new(),
             next_session: 1,
             next_prompt: Arc::new(AtomicU64::new(1)),
+            log,
+            requests: 0,
+            malformed_requests: 0,
         }
     }
 
@@ -174,9 +185,15 @@ impl Connection {
         // Sessions that ended on their own (and reported it) are forgotten.
         self.sessions.retain(|_, s| !s.task.is_finished());
 
+        self.requests += 1;
         let msg = match decode_client(buf) {
             Ok(msg) => msg,
-            Err(e) => return error_msg(0, v1::ErrorCode::Malformed, e.to_string()),
+            Err(e) => {
+                self.malformed_requests += 1;
+                self.log
+                    .warn("connection", 0, &format!("malformed request: {e}"));
+                return error_msg(0, v1::ErrorCode::Malformed, e.to_string());
+            }
         };
         let id = msg.request_id;
         let reply = |body| v1::EngineMsg {
@@ -193,6 +210,14 @@ impl Connection {
                     return error_msg(id, v1::ErrorCode::Protocol, "protocol_version 0");
                 }
                 self.hello_done = true;
+                self.log.info(
+                    "connection",
+                    0,
+                    &format!(
+                        "hello from {:?}, protocol {}",
+                        hello.client_name, hello.protocol_version
+                    ),
+                );
                 return reply(engine_msg::Body::HelloAck(v1::HelloAck {
                     protocol_version: hello.protocol_version.min(PROTOCOL_VERSION),
                     engine_version: self.config.version.clone(),
@@ -264,6 +289,9 @@ impl Connection {
             Some(client_msg::Body::CloseSession(c)) => match self.sessions.remove(&c.session_id) {
                 Some(s) => {
                     s.task.abort();
+                    s.stats.set_phase(v1::SessionPhase::Closed);
+                    self.log
+                        .info("session", c.session_id, "closed by the frontend");
                     let out = self.out.clone();
                     let session_id = c.session_id;
                     // Reported from a task: this loop must not wait on the
@@ -286,6 +314,28 @@ impl Connection {
                     format!("no session {}", c.session_id),
                 )),
             },
+            Some(client_msg::Body::GetStats(_)) => {
+                return reply(engine_msg::Body::EngineStats(self.stats()));
+            }
+            Some(client_msg::Body::GetLogs(req)) => {
+                return reply(engine_msg::Body::LogBatch(self.log.read(&req)));
+            }
+            Some(client_msg::Body::ListHostKeys(_)) => {
+                let Some(path) = &self.env.known_hosts else {
+                    return reply(engine_msg::Body::HostKeyList(v1::HostKeyList::default()));
+                };
+                return match hostkeys::list(path) {
+                    Ok(entries) => {
+                        reply(engine_msg::Body::HostKeyList(v1::HostKeyList { entries }))
+                    }
+                    Err(e) => error_msg(
+                        id,
+                        v1::ErrorCode::Internal,
+                        format!("cannot read known_hosts: {e}"),
+                    ),
+                };
+            }
+            Some(client_msg::Body::ForgetHostKey(f)) => self.forget_host_key(f),
             // A variant newer than this engine: prost leaves the body empty.
             None => return error_msg(id, v1::ErrorCode::Unsupported, "unknown or empty request"),
         };
@@ -323,12 +373,29 @@ impl Connection {
 
         let session_id = self.next_session;
         self.next_session += 1;
+        let stats = Arc::new(SessionStats::new(
+            &open.host,
+            port,
+            &open.username,
+            cols,
+            rows,
+        ));
+        self.log.info(
+            "session",
+            session_id,
+            &format!(
+                "open {}@{}:{port} ({cols}x{rows})",
+                open.username, open.host
+            ),
+        );
         let prompts: Prompts = Arc::new(Mutex::new(HashMap::new()));
         let prompter = Arc::new(Prompter {
             session_id,
             out: self.out.clone(),
             prompts: prompts.clone(),
             next_prompt: self.next_prompt.clone(),
+            stats: stats.clone(),
+            log: self.log.clone(),
         });
         let (commands, commands_rx) = mpsc::channel(SESSION_QUEUE_DEPTH);
         let spec = session::Spec {
@@ -344,10 +411,56 @@ impl Connection {
             SessionHandle {
                 commands,
                 prompts,
+                stats,
                 task,
             },
         );
         Ok(session_id)
+    }
+
+    fn stats(&self) -> v1::EngineStats {
+        let mut sessions: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|(id, s)| s.stats.snapshot(*id))
+            .collect();
+        sessions.sort_by_key(|s| s.session_id);
+        v1::EngineStats {
+            uptime_ms: self.started.elapsed().as_millis() as u64,
+            sessions,
+            sessions_opened: self.next_session - 1,
+            requests: self.requests,
+            malformed_requests: self.malformed_requests,
+            last_log_seq: self.log.last_seq(),
+        }
+    }
+
+    fn forget_host_key(&mut self, f: v1::ForgetHostKey) -> Result<(), (v1::ErrorCode, String)> {
+        let port = match f.port {
+            0 => 22,
+            p @ 1..=65535 => p as u16,
+            _ => return Err((v1::ErrorCode::Invalid, "invalid port".into())),
+        };
+        if f.host.is_empty() || f.host.len() > 255 || f.host.chars().any(char::is_whitespace) {
+            return Err((v1::ErrorCode::Invalid, "invalid host".into()));
+        }
+        let Some(path) = &self.env.known_hosts else {
+            return Ok(());
+        };
+        match hostkeys::forget(path, &f.host, port) {
+            Ok(n) => {
+                self.log.info(
+                    "hostkeys",
+                    0,
+                    &format!("forgot {n} key(s) for {}:{port}", f.host),
+                );
+                Ok(())
+            }
+            Err(e) => Err((
+                v1::ErrorCode::Internal,
+                format!("cannot update known_hosts: {e}"),
+            )),
+        }
     }
 
     fn answer(
