@@ -1,4 +1,4 @@
-Port 2222
+# The listen address comes from scripts/testhost (-o ListenAddress=...).
 PasswordAuthentication yes
 KbdInteractiveAuthentication yes
 PermitRootLogin no

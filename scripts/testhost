@@ -6,7 +6,8 @@
 #   scripts/testhost stop
 #
 # It runs under gVisor (--runtime=runsc) when runsc is installed, else plain
-# crun (or always crun with VEIL_TESTHOST_RUNTIME=crun), and is published only on ADDRESS (e.g. your tailnet or tether
+# crun (or always crun with VEIL_TESTHOST_RUNTIME=crun). It uses the host's
+# network (no port forward in between) and sshd listens only on ADDRESS (e.g. your tailnet or tether
 # address; never all interfaces). User "tester"; the password is random per
 # start and kept in $XDG_RUNTIME_DIR (RAM, mode 600), not in the image, an
 # environment variable or a command line.
@@ -32,11 +33,12 @@ start)
 	podman rm -f "$name" > /dev/null 2>&1 || true
 	runtime=()
 	if [[ ${VEIL_TESTHOST_RUNTIME:-} != crun ]] && command -v runsc > /dev/null; then
-		runtime=(--runtime=runsc --runtime-flag=ignore-cgroups --security-opt label=disable)
+		# hostinet: gVisor uses the host's network directly, so sshd binds ADDRESS itself.
+		runtime=(--runtime=runsc --runtime-flag=ignore-cgroups --runtime-flag=network=host --security-opt label=disable)
 	fi
 	podman run -d --name "$name" "${runtime[@]}" --cap-drop=all \
 		--cap-add=SETUID,SETGID,CHOWN,SYS_CHROOT,AUDIT_WRITE,DAC_OVERRIDE,FOWNER \
-		-p "$addr:$port:2222" "$image" > /dev/null
+		--network=host "$image" -o "ListenAddress=$addr:$port" > /dev/null
 	mkdir -p "$state"
 	chmod 700 "$state"
 	(umask 077 && head -c 18 /dev/urandom | base64 | tr -d '/+=' > "$state/password")
