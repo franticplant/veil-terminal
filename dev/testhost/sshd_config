@@ -1,0 +1,7 @@
+Port 2222
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+PermitRootLogin no
+AllowUsers tester
+PrintMotd yes
+Banner none

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# A disposable SSH server to run Veil's scenarios against.
+#
+#   scripts/testhost start ADDRESS [PORT]   build if needed, start, set a new password
+#   scripts/testhost password               print the current password
+#   scripts/testhost stop
+#
+# It runs under gVisor (--runtime=runsc) when runsc is installed, else plain
+# crun (or always crun with VEIL_TESTHOST_RUNTIME=crun), and is published only on ADDRESS (e.g. your tailnet or tether
+# address; never all interfaces). User "tester"; the password is random per
+# start and kept in $XDG_RUNTIME_DIR (RAM, mode 600), not in the image, an
+# environment variable or a command line.
+#
+# Then, for example:
+#   veil-ctl scenario connect-echo host=ADDRESS port=2222 user=tester password="$(scripts/testhost password)"
+set -euo pipefail
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+name=veil-testhost
+state=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/veil-testhost
+cmd=${1:-}
+
+case $cmd in
+start)
+	addr=${2:-}
+	port=${3:-2222}
+	[[ -n $addr ]] || { echo "usage: $0 start ADDRESS [PORT]" >&2; exit 2; }
+	[[ $addr != 0.0.0.0 && $addr != :: ]] || { echo "refusing to listen on all interfaces" >&2; exit 2; }
+	tag=$(cat "$repo"/dev/testhost/* | sha256sum | cut -c1-16)
+	image=localhost/veil-testhost:$tag
+	podman image exists "$image" || podman build -t "$image" "$repo/dev/testhost" >&2
+	podman rm -f "$name" > /dev/null 2>&1 || true
+	runtime=()
+	if [[ ${VEIL_TESTHOST_RUNTIME:-} != crun ]] && command -v runsc > /dev/null; then
+		runtime=(--runtime=runsc --runtime-flag=ignore-cgroups --security-opt label=disable)
+	fi
+	podman run -d --name "$name" "${runtime[@]}" --cap-drop=all \
+		--cap-add=SETUID,SETGID,CHOWN,SYS_CHROOT,AUDIT_WRITE,DAC_OVERRIDE,FOWNER \
+		-p "$addr:$port:2222" "$image" > /dev/null
+	mkdir -p "$state"
+	chmod 700 "$state"
+	(umask 077 && head -c 18 /dev/urandom | base64 | tr -d '/+=' > "$state/password")
+	printf 'tester:%s\n' "$(cat "$state/password")" | podman exec -i "$name" chpasswd
+	echo "test host on $addr:$port (runtime: ${runtime[0]:-crun}), user tester; password: $0 password" >&2
+	;;
+password)
+	cat "$state/password"
+	;;
+stop)
+	podman rm -f "$name" > /dev/null && rm -f "$state/password"
+	echo "stopped" >&2
+	;;
+*)
+	echo "usage: $0 start ADDRESS [PORT] | password | stop" >&2
+	exit 2
+	;;
+esac
