@@ -67,9 +67,11 @@ impl Ctx {
 }
 
 fn client_name() -> String {
-    let host = std::fs::read_to_string("/etc/hostname")
+    let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "laptop".into());
+        .ok()
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "laptop".into());
     let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
     format!("veil-ctl {user}@{host}")
 }
@@ -471,8 +473,8 @@ fn update(ctx: &Ctx, apks: &[String]) -> Result<ExitCode, String> {
             )
             .map_err(|e| e.to_string())?;
         let upload = begin["uploadId"].as_str().ok_or("no uploadId")?.to_string();
-        // Under devd's 1 MiB decoded limit.
-        let chunk = 768 * 1024;
+        // Base64 grows by 4/3: 192 KiB stays under devd's 256 KiB string limit.
+        let chunk = 192 * 1024;
         let mut off = 0usize;
         while off < bytes.len() {
             let end = (off + chunk).min(bytes.len());

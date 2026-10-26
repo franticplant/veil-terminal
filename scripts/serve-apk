@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Serves one APK over HTTP for a phone to download, for the first install of
+# devd (after that, devd installs everything: veil-ctl update).
+#
+#   scripts/serve-apk APK ADDRESS [MINUTES]
+#
+# ADDRESS is required and must be one of this machine's addresses on a
+# network you choose (the USB tether, or your tailnet address); there is no
+# all-interfaces default. Only that one file is served, as /<name>.apk, from a
+# throwaway directory, and the server stops after MINUTES (default 15). The
+# APK's own signature is what makes it trustworthy, not this transport:
+# Android and devd check the signer.
+set -euo pipefail
+
+apk=${1:-}
+addr=${2:-}
+minutes=${3:-15}
+[[ -f $apk && -n $addr ]] || { echo "usage: $0 APK ADDRESS [MINUTES]" >&2; exit 2; }
+[[ $addr != 0.0.0.0 && $addr != :: ]] || { echo "refusing to listen on all interfaces" >&2; exit 2; }
+
+dir=$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/veil-serve.XXXXXX")
+trap 'rm -rf "$dir"' EXIT
+name=$(basename "$apk")
+cp "$apk" "$dir/$name"
+echo "serving http://$addr:8000/$name for $minutes minutes (sha256 $(sha256sum "$apk" | cut -c1-16)…)" >&2
+timeout "$((minutes * 60))" python3 -I -m http.server 8000 --bind "$addr" --directory "$dir" || true

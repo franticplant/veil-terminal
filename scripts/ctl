@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Builds veil-ctl (dev/ctl), the laptop CLI for the dev agent, in the build
+# container, and copies it out of the container's target volume.
+#
+#   scripts/ctl              build, write dist/veil-ctl
+#   scripts/ctl --install    also copy it to ~/.local/bin/veil-ctl
+#
+# The binary is built for x86_64 Linux with the container's glibc (Debian),
+# which runs on any newer host glibc.
+set -euo pipefail
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+install=false
+[[ ${1:-} == --install ]] && install=true
+
+"$repo/scripts/podman-run" cargo build --release --locked -p veil-ctl
+mkdir -p "$repo/dist"
+# The target directory lives in the veil-target volume, not in the repo.
+"$repo/scripts/podman-run" install -m 755 /cache/target/release/veil-ctl dist/veil-ctl
+echo "built dist/veil-ctl" >&2
+
+if $install; then
+	mkdir -p "$HOME/.local/bin"
+	install -m 755 "$repo/dist/veil-ctl" "$HOME/.local/bin/veil-ctl"
+	echo "installed ~/.local/bin/veil-ctl" >&2
+fi

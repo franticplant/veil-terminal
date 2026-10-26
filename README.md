@@ -22,6 +22,9 @@ through the engine protocol, in one process.
 | `android/app` | The package: `dev` and `prod` flavors of one application ID |
 | `build/Containerfile` | The only build environment, local and CI |
 | `scripts/` | Build, sign, release checks |
+| `android/devd` | The dev agent package: listener, pairing, updater (never on a production setup) |
+| `android/devapi` | The dev API's method specs and the DevHooks Binder interface |
+| `dev/ctl` | `veil-ctl`, the laptop CLI for the dev agent |
 | `dev/signing` | The public signing certificate and its pinned digest |
 
 ## Building
@@ -30,7 +33,9 @@ Everything builds in throwaway podman containers; the host needs only podman and
 
 ```sh
 scripts/build dev          # unsigned dev APK (first run builds the container image)
+scripts/build devd         # the dev agent; `all` builds dev, prod and devd
 scripts/sign dev           # sign into dist/, verify the signer, run the release checks
+scripts/ctl --install      # veil-ctl into dist/ and ~/.local/bin
 scripts/podman-run cargo test --workspace
 scripts/podman-run cargo deny check
 scripts/podman-run ./android/gradlew -p android testDebugUnitTest ktfmtCheck
@@ -39,6 +44,21 @@ scripts/podman-run ./android/gradlew -p android testDebugUnitTest ktfmtCheck
 `dev` and `prod` share the application ID and signing key, so either installs over the other
 (within Android's no-downgrade rule). Only `dev` carries the development control plane, and
 `scripts/check-release-apk.sh` fails any prod APK that contains it.
+
+## Driving a phone
+
+Dev builds are controlled from the laptop through a typed API (no shell),
+served by the separate dev agent devd and called with `veil-ctl`:
+
+```sh
+veil-ctl -a PHONE:7390 pair              # once; approve on the phone
+veil-ctl update dist/veil-VERSION-dev.apk
+veil-ctl scenario connect-echo host=HOST user=USER password=PASSWORD
+veil-ctl logs engine -f
+```
+
+Setup, scopes, the method list and the security model are described in
+[docs/dev-control.md](docs/dev-control.md).
 
 ## License
 
