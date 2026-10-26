@@ -21,6 +21,10 @@ class UiPrefs(context: Context) {
         val fullscreen: Boolean = false,
         val fontSizeSp: Float = 13f,
         val clipboard: ClipboardPolicy = ClipboardPolicy.ASK,
+        /** A [Palette] id. */
+        val theme: String = Palette.VEIL.id,
+        /** In fullscreen, draw into the display cutout (notch) area too. */
+        val coverCutout: Boolean = false,
     )
 
     private val _values =
@@ -32,6 +36,8 @@ class UiPrefs(context: Context) {
                 clipboard =
                     runCatching { ClipboardPolicy.valueOf(prefs.getString("clipboard", "ASK")!!) }
                         .getOrDefault(ClipboardPolicy.ASK),
+                theme = prefs.getString("theme", Palette.VEIL.id)!!,
+                coverCutout = prefs.getBoolean("coverCutout", false),
             )
         )
 
@@ -44,6 +50,8 @@ class UiPrefs(context: Context) {
             putBoolean("fullscreen", v.fullscreen)
             putFloat("fontSize", v.fontSizeSp)
             putString("clipboard", v.clipboard.name)
+            putString("theme", v.theme)
+            putBoolean("coverCutout", v.coverCutout)
         }
         _values.value = v
     }

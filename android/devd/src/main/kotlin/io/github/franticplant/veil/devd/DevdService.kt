@@ -38,7 +38,7 @@ class DevdService : Service() {
                 shutDown()
                 return START_NOT_STICKY
             }
-            ACTION_EXTEND -> schedule(60)
+            ACTION_EXTEND -> schedule(System.currentTimeMillis() + 60 * 60_000L)
             else -> {
                 startForeground(
                     Notifications.LISTENER_ID,
@@ -46,7 +46,14 @@ class DevdService : Service() {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
                 )
                 app.server.start()
-                schedule(app.settings.values.value.autoOffMinutes)
+                // Resumed after an update: keep the time that was left; else a fresh period.
+                val resumeAt = intent?.getLongExtra(EXTRA_OFF_AT, 0L) ?: 0L
+                schedule(
+                    if (resumeAt > System.currentTimeMillis()) resumeAt
+                    else
+                        System.currentTimeMillis() +
+                            app.settings.values.value.autoOffMinutes * 60_000L
+                )
                 scope.launch {
                     combine(app.server.addresses, app.offAtMs) { a, off -> a to off }
                         .collect { (a, off) ->
@@ -64,13 +71,17 @@ class DevdService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun schedule(minutes: Int) {
+    /** Switches off at [offAtMs]. Remembered, so an update (which ends this process) can resume. */
+    private fun schedule(offAtMs: Long) {
         handler.removeCallbacks(autoOff)
-        handler.postDelayed(autoOff, minutes * 60_000L)
-        app._offAtMs.value = System.currentTimeMillis() + minutes * 60_000L
+        handler.postDelayed(autoOff, (offAtMs - System.currentTimeMillis()).coerceAtLeast(0))
+        app._offAtMs.value = offAtMs
+        app.settings.rememberListener(offAtMs)
     }
 
     private fun shutDown() {
+        // Switched off on purpose: nothing to resume.
+        app.settings.rememberListener(null)
         handler.removeCallbacks(autoOff)
         app.server.stop()
         app.hooks.unbind()
@@ -91,6 +102,15 @@ class DevdService : Service() {
         const val ACTION_START = "start"
         const val ACTION_STOP = "stop"
         const val ACTION_EXTEND = "extend"
+        const val EXTRA_OFF_AT = "offAt"
+
+        /** Resumes a listener that was on when this process ended (an update), until [offAtMs]. */
+        fun resume(context: Context, offAtMs: Long) =
+            context.startForegroundService(
+                Intent(context, DevdService::class.java)
+                    .setAction(ACTION_START)
+                    .putExtra(EXTRA_OFF_AT, offAtMs)
+            )
 
         fun start(context: Context) =
             context.startForegroundService(

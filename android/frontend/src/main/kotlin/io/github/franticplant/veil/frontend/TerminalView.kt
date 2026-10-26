@@ -52,6 +52,14 @@ class TerminalView(context: Context) : View(context) {
     var stickyAlt = false
     var onStickyConsumed: (() -> Unit)? = null
 
+    /** The color theme. */
+    var palette: Palette = Palette.VEIL
+        set(value) {
+            if (field === value) return
+            field = value
+            invalidate()
+        }
+
     var fontSizeSp = 13f
         set(value) {
             field = value.coerceIn(7f, 32f)
@@ -115,7 +123,7 @@ class TerminalView(context: Context) : View(context) {
     // ---- Drawing ----------------------------------------------------------
 
     override fun onDraw(canvas: Canvas) {
-        canvas.drawColor(Palette.DEFAULT_BG)
+        canvas.drawColor(palette.bg)
         val s = session ?: return
         synchronized(s.screen) { drawScreen(canvas, s.screen) }
     }
@@ -127,11 +135,11 @@ class TerminalView(context: Context) : View(context) {
             for (run in row.runsList) {
                 val f = run.flags
                 val bold = f and RunFlag.RUN_FLAG_BOLD_VALUE != 0
-                var fg = Palette.resolve(run.fg, Palette.DEFAULT_FG, bold)
-                var bg = Palette.resolve(run.bg, Palette.DEFAULT_BG)
+                var fg = palette.resolve(run.fg, palette.fg, bold)
+                var bg = palette.resolve(run.bg, palette.bg)
                 if (f and RunFlag.RUN_FLAG_INVERSE_VALUE != 0) fg = bg.also { bg = fg }
                 val x = run.col * cellW
-                if (bg != Palette.DEFAULT_BG) {
+                if (bg != palette.bg) {
                     bgPaint.color = bg
                     canvas.drawRect(x, y, x + run.cells * cellW, y + cellH, bgPaint)
                 }
@@ -186,7 +194,7 @@ class TerminalView(context: Context) : View(context) {
         if (!cur.visible || screen.scrollOffset != 0) return
         val x = cur.col * cellW
         val y = cur.row * cellH
-        bgPaint.color = Palette.CURSOR
+        bgPaint.color = palette.cursor
         when (cur.shape) {
             CursorShape.CURSOR_SHAPE_BEAM ->
                 canvas.drawRect(x, y, x + max(2f, cellW / 8), y + cellH, bgPaint)

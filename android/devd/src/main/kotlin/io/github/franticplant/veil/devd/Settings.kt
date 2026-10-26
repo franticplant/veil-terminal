@@ -49,6 +49,16 @@ class Settings(context: Context) {
         _values.value = v
     }
 
+    /** When a running listener switches off; null when it is off. Survives the process. */
+    val listenerOffAt: Long?
+        get() = prefs.getLong("listenerOffAt", 0L).takeIf { it > 0 }
+
+    fun rememberListener(offAtMs: Long?) {
+        prefs.edit {
+            if (offAtMs == null) remove("listenerOffAt") else putLong("listenerOffAt", offAtMs)
+        }
+    }
+
     companion object {
         const val DEFAULT_PORT = 7390
         val AUTO_OFF_CHOICES = listOf(15, 60, 240, 480)

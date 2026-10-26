@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Bundle
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -31,6 +33,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
@@ -38,10 +41,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -50,6 +56,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -87,9 +94,29 @@ class MainActivity : ComponentActivity() {
         val host = application as EngineHost
         val profiles = host.profiles
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
-                Surface(Modifier.fillMaxSize(), color = Color(Palette.DEFAULT_BG)) {
-                    VeilApp(host, profiles)
+            val ui by host.uiPrefs.values.collectAsState()
+            val palette = Palette.byId(ui.theme)
+            val bg = Color(palette.bg)
+            val fg = Color(palette.fg)
+            val scheme =
+                if (palette.dark) {
+                    darkColorScheme(
+                        background = bg,
+                        surface = bg,
+                        onBackground = fg,
+                        onSurface = fg,
+                    )
+                } else {
+                    lightColorScheme(
+                        background = bg,
+                        surface = bg,
+                        onBackground = fg,
+                        onSurface = fg,
+                    )
+                }
+            CompositionLocalProvider(LocalPalette provides palette) {
+                MaterialTheme(colorScheme = scheme) {
+                    Surface(Modifier.fillMaxSize(), color = bg) { VeilApp(host, profiles) }
                 }
             }
         }
@@ -114,8 +141,15 @@ private fun VeilApp(host: EngineHost, profiles: Profiles) {
     val immersive = ui.fullscreen && inTerminal
     val activity = LocalContext.current as? Activity
     // Immersive: the system bars hide and come back with a swipe from the edge.
-    LaunchedEffect(immersive) {
+    val coverCutout = immersive && ui.coverCutout
+    LaunchedEffect(immersive, coverCutout) {
         val window = activity?.window ?: return@LaunchedEffect
+        window.attributes =
+            window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    if (coverCutout) WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                    else WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+            }
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         if (immersive) {
             controller.systemBarsBehavior =
@@ -138,7 +172,9 @@ private fun VeilApp(host: EngineHost, profiles: Profiles) {
         }
     }
 
-    Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+    // Covering the notch: only the keyboard pushes the terminal; text may sit under the cutout.
+    val insets = if (coverCutout) WindowInsets.ime else WindowInsets.safeDrawing
+    Column(Modifier.fillMaxSize().windowInsetsPadding(insets)) {
         if (!immersive) {
             SessionTabs(
                 sessions = sessions,
@@ -219,6 +255,7 @@ private fun HostsScreen(host: EngineHost, profiles: Profiles, onConnect: (Target
     val all by profiles.all.collectAsState()
     var editing by remember { mutableStateOf<Target?>(null) }
     var adding by remember { mutableStateOf(false) }
+    var settings by remember { mutableStateOf(false) }
 
     Column(
         Modifier.fillMaxSize().padding(16.dp),
@@ -227,8 +264,10 @@ private fun HostsScreen(host: EngineHost, profiles: Profiles, onConnect: (Target
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Veil Terminal", style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.weight(1f))
+            TextButton(onClick = { settings = true }) { Text("Settings") }
             Button(onClick = { adding = true }) { Text("Add host") }
         }
+        if (settings) SettingsDialog(host.uiPrefs) { settings = false }
         val info = host.buildInfo
         Text(
             "${info.versionName} · engine: ${host.backendKind}" +
@@ -378,6 +417,8 @@ private fun TerminalScreen(
     val ui by prefs.values.collectAsState()
     val context = LocalContext.current
     var offer by remember { mutableStateOf<ClipboardOffer?>(null) }
+    var settings by remember { mutableStateOf(false) }
+    if (settings) SettingsDialog(prefs) { settings = false }
 
     // Clipboard offers from the remote (OSC 52), under the user's policy.
     LaunchedEffect(session) {
@@ -414,6 +455,7 @@ private fun TerminalScreen(
                     v.session = session
                     v.stickyCtrl = stickyState[0]
                     v.stickyAlt = stickyState[1]
+                    v.palette = Palette.byId(ui.theme)
                 },
             )
             if (!ui.extraKeys) {
@@ -422,11 +464,14 @@ private fun TerminalScreen(
                     Modifier.align(Alignment.BottomEnd)
                         .padding(6.dp)
                         .size(36.dp)
-                        .background(Color(0x99303643), CircleShape)
+                        .background(
+                            Color(LocalPalette.current.chromeActive).copy(alpha = 0.7f),
+                            CircleShape,
+                        )
                         .clickable { prefs.update { it.copy(extraKeys = true) } },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("▴", color = Color(0xFFD8DEE9))
+                    Text("▴", color = Color(LocalPalette.current.chromeText))
                 }
             }
         }
@@ -446,6 +491,11 @@ private fun TerminalScreen(
                 onAlt = { stickyState[1] = !stickyState[1] },
                 onHide = { prefs.update { it.copy(extraKeys = false) } },
                 onFullscreen = { prefs.update { it.copy(fullscreen = !it.fullscreen) } },
+                onSettings = { settings = true },
+                onFontSize = { size ->
+                    view?.fontSizeSp = size
+                    view?.let { v -> prefs.update { it.copy(fontSizeSp = v.fontSizeSp) } }
+                },
             )
         }
     }
@@ -519,14 +569,17 @@ private fun ExtraKeys(
     onAlt: () -> Unit,
     onHide: () -> Unit,
     onFullscreen: () -> Unit,
+    onSettings: () -> Unit,
+    onFontSize: (Float) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val palette = LocalPalette.current
     @Composable
     fun K(label: String, active: Boolean = false, action: () -> Unit) {
         Box(
             Modifier.height(40.dp)
                 .width(44.dp)
-                .background(if (active) Color(0xFF3A4150) else Color(0xFF1C2028))
+                .background(Color(if (active) palette.chromeActive else palette.chrome))
                 .clickable(onClick = action),
             contentAlignment = Alignment.Center,
         ) {
@@ -534,7 +587,7 @@ private fun ExtraKeys(
                 label,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 13.sp,
-                color = Color(0xFFD8DEE9),
+                color = Color(palette.chromeText),
             )
         }
     }
@@ -545,6 +598,7 @@ private fun ExtraKeys(
         K("▾", action = onHide)
         K(if (fullscreen) "⤡" else "⤢", fullscreen, onFullscreen)
         K("⌨") { view?.showKeyboard() }
+        K("⚙", action = onSettings)
         K("Esc") { view?.sendKey(Key.ESCAPE) }
         K("Ctrl", ctrl, onCtrl)
         K("Alt", alt, onAlt)
@@ -559,9 +613,8 @@ private fun ExtraKeys(
         K("PgDn") { view?.sendKey(Key.PAGE_DOWN) }
         for (c in listOf("|", "~", "/", "-")) K(c) { view?.sendText(c) }
         K("Paste") { view?.let { pasteClipboard(context, it) } }
-        K("A−") { view?.let { it.fontSizeSp -= 1f } }
-        K("A+") { view?.let { it.fontSizeSp += 1f } }
-        K("⌨") { view?.showKeyboard() }
+        K("A−") { view?.let { onFontSize(it.fontSizeSp - 1f) } }
+        K("A+") { view?.let { onFontSize(it.fontSizeSp + 1f) } }
     }
 }
 
@@ -681,7 +734,10 @@ private fun ClipboardDialog(
                     preview,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp,
-                    modifier = Modifier.fillMaxWidth().background(Color(0xFF1C2028)).padding(8.dp),
+                    modifier =
+                        Modifier.fillMaxWidth()
+                            .background(Color(LocalPalette.current.chrome))
+                            .padding(8.dp),
                 )
             }
         },
@@ -693,4 +749,80 @@ private fun ClipboardDialog(
             }
         },
     )
+}
+
+/** The current theme, for composables that draw chrome around the terminal. */
+val LocalPalette = staticCompositionLocalOf { Palette.VEIL }
+
+/** Theme, clipboard policy and screen options. */
+@Composable
+private fun SettingsDialog(prefs: UiPrefs, onDismiss: () -> Unit) {
+    val ui by prefs.values.collectAsState()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        title = { Text("Settings") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("Theme", style = MaterialTheme.typography.labelLarge)
+                for (p in Palette.ALL) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable {
+                            prefs.update { it.copy(theme = p.id) }
+                        },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // A swatch: the background with a few of the theme's colors.
+                        Row(Modifier.background(Color(p.bg)).padding(4.dp)) {
+                            for (c in
+                                listOf(
+                                    p.fg,
+                                    p.resolve(0x01000001, 0),
+                                    p.resolve(0x01000002, 0),
+                                    p.resolve(0x01000004, 0),
+                                )) {
+                                Box(Modifier.size(10.dp).background(Color(c)))
+                            }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(p.name + if (ui.theme == p.id) "  ✓" else "")
+                    }
+                }
+                Text("Remote clipboard (OSC 52)", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (c in UiPrefs.ClipboardPolicy.entries) {
+                        FilterChip(
+                            selected = ui.clipboard == c,
+                            onClick = { prefs.update { it.copy(clipboard = c) } },
+                            label = { Text(c.name.lowercase()) },
+                        )
+                    }
+                }
+                SettingSwitch("Keys bar", ui.extraKeys) { on ->
+                    prefs.update { it.copy(extraKeys = on) }
+                }
+                SettingSwitch("Fullscreen terminal", ui.fullscreen) { on ->
+                    prefs.update { it.copy(fullscreen = on) }
+                }
+                SettingSwitch("Fullscreen covers the notch", ui.coverCutout) { on ->
+                    prefs.update { it.copy(coverCutout = on) }
+                }
+                Text(
+                    "Text size ${ui.fontSizeSp} sp (pinch the terminal to change)",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+    )
+}
+
+@Composable
+private fun SettingSwitch(label: String, on: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f))
+        Switch(checked = on, onCheckedChange = onChange)
+    }
 }

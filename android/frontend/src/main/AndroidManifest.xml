@@ -5,7 +5,14 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:windowSoftInputMode="adjustResize">
+            android:windowSoftInputMode="adjustResize"
+            android:screenOrientation="fullSensor"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|density|uiMode">
+            <!--
+              fullSensor: all four orientations, upside down included. configChanges: rotating,
+              folding or plugging in a keyboard resizes the terminal instead of recreating the
+              activity, so nothing on screen is lost.
+            -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
