@@ -10,19 +10,28 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * Listener settings. Changed only on the phone: the API has no method for its own configuration.
  *
- * The listener always binds loopback. [iface], if set, adds that one interface's IPv4 address (for
- * example the USB tether, ncm0); it is never all interfaces.
+ * The listener binds loopback (unless switched off) and the IPv4 addresses of each interface the
+ * user enabled, for example the USB tether (ncm0). Never all interfaces.
  */
 class Settings(context: Context) {
     private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
-    data class Values(val port: Int, val iface: String?, val autoOffMinutes: Int)
+    data class Values(
+        val port: Int,
+        val loopback: Boolean,
+        val ifaces: Set<String>,
+        val autoOffMinutes: Int,
+    )
 
     private val _values =
         MutableStateFlow(
             Values(
                 port = prefs.getInt("port", DEFAULT_PORT),
-                iface = prefs.getString("iface", null),
+                loopback = prefs.getBoolean("loopback", true),
+                // Earlier versions kept one interface under "iface".
+                ifaces =
+                    prefs.getStringSet("ifaces", null)?.toSet()
+                        ?: setOfNotNull(prefs.getString("iface", null)),
                 autoOffMinutes = prefs.getInt("autoOff", 60),
             )
         )
@@ -32,7 +41,9 @@ class Settings(context: Context) {
     fun update(v: Values) {
         prefs.edit {
             putInt("port", v.port)
-            putString("iface", v.iface)
+            putBoolean("loopback", v.loopback)
+            putStringSet("ifaces", v.ifaces)
+            remove("iface")
             putInt("autoOff", v.autoOffMinutes)
         }
         _values.value = v

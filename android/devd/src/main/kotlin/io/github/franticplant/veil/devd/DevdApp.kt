@@ -1,13 +1,16 @@
 package io.github.franticplant.veil.devd
 
 import android.app.Application
+import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /** Owns devd's parts. Each is handed what it needs; none reaches the others through a global. */
 class DevdApp : Application() {
-    val log = DevdLog()
-    val access = AccessLog()
+    /** Persistent and hash-chained: devd's log and the access log. */
+    val journal by lazy { Journal(File(filesDir, "journal")) }
+    val log by lazy { DevdLog(journal) }
+    val access by lazy { AccessLog(journal) }
     val settings by lazy { Settings(this) }
     val pairings by lazy { Pairings(this, log) }
     val hooks by lazy { Hooks(this, log) }

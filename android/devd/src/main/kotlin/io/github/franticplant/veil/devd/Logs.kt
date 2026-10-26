@@ -1,28 +1,22 @@
 package io.github.franticplant.veil.devd
 
 import android.util.Log
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** devd's own bounded log (listener, pairing, updates), also written to logcat. */
-class DevdLog(private val capacity: Int = 2000) {
-    private val entries = ArrayDeque<JSONObject>(capacity)
-    private var nextSeq = 1L
-
+/**
+ * devd's log (listener, pairing, updates, hooks). Entries go to the [Journal], so they persist and
+ * are hash-chained, and to logcat.
+ */
+class DevdLog(private val journal: Journal) {
     fun log(level: String, component: String, message: String) {
-        synchronized(this) {
-            if (entries.size == capacity) entries.removeFirst()
-            entries.addLast(
-                JSONObject()
-                    .put("seq", nextSeq++)
-                    .put("unixMs", System.currentTimeMillis())
-                    .put("level", level)
-                    .put("component", component)
-                    .put("message", message)
-            )
-        }
+        journal.append(
+            JSONObject()
+                .put("kind", "log")
+                .put("level", level)
+                .put("component", component)
+                .put("message", message)
+        )
         val tag = "devd/$component"
         when (level) {
             "warn" -> Log.w(tag, message)
@@ -34,66 +28,66 @@ class DevdLog(private val capacity: Int = 2000) {
     fun info(component: String, message: String) = log("info", component, message)
 
     fun warn(component: String, message: String) = log("warn", component, message)
-
-    fun read(after: Long, max: Int, grep: String?): JSONObject =
-        synchronized(this) {
-            val out = JSONArray()
-            var next = after
-            for (e in entries) {
-                if (e.getLong("seq") <= after) continue
-                if (out.length() == max) break
-                next = e.getLong("seq")
-                if (grep != null && !e.getString("message").contains(grep, ignoreCase = true))
-                    continue
-                out.put(e)
-            }
-            JSONObject().put("entries", out).put("nextSeq", next)
-        }
 }
 
-/** One authenticated (or refused) API call. Parameter names only, never values. */
+/** One API call, as the access log records it: parameter names only, never values. */
 data class Access(
-    val unixMs: Long,
     val client: String,
     val method: String,
     val params: List<String>,
     val outcome: String,
     val ms: Long,
+    /** The listener address the call arrived on, and the peer's address. */
+    val local: String,
+    val peer: String,
 )
 
 /**
- * The access log. The API can read it but nothing can write it except the server, and remote
- * control cannot clear it.
+ * The access log: one journal entry per call. The API can read it; nothing but the server writes
+ * it, and nothing can clear it.
  */
-class AccessLog(private val capacity: Int = 500) {
-    private val entries = ArrayDeque<Access>(capacity)
-    private val _recent = MutableStateFlow<List<Access>>(emptyList())
-
-    /** The newest entries, newest first, for the phone's screen. */
-    val recent: StateFlow<List<Access>> = _recent
-
+class AccessLog(private val journal: Journal) {
     fun add(a: Access) {
-        synchronized(this) {
-            if (entries.size == capacity) entries.removeFirst()
-            entries.addLast(a)
-            _recent.value = entries.takeLast(30).reversed()
+        journal.append(
+            JSONObject()
+                .put("kind", "access")
+                .put("level", if (a.outcome == "ok") "info" else "warn")
+                .put("component", "api")
+                .put("client", a.client)
+                .put("method", a.method)
+                .put("params", JSONArray(a.params))
+                .put("outcome", a.outcome)
+                .put("ms", a.ms)
+                .put("local", a.local)
+                .put("peer", a.peer)
+        )
+    }
+}
+
+/** Journal filters shared by the API and the log viewer. */
+object JournalFilter {
+    private val LEVELS = listOf("debug", "info", "warn", "error")
+
+    fun of(
+        kind: String = "all",
+        minLevel: String? = null,
+        component: String? = null,
+        grep: String? = null,
+    ): (JSONObject) -> Boolean {
+        val min = minLevel?.let { LEVELS.indexOf(it) } ?: 0
+        return { e ->
+            (kind == "all" || e.optString("kind") == kind) &&
+                LEVELS.indexOf(e.optString("level", "info")) >= min &&
+                (component == null || e.optString("component") == component) &&
+                (grep == null || searchText(e).contains(grep, ignoreCase = true))
         }
     }
 
-    fun read(max: Int): JSONArray =
-        synchronized(this) {
-            JSONArray().apply {
-                for (a in entries.takeLast(max)) {
-                    put(
-                        JSONObject()
-                            .put("unixMs", a.unixMs)
-                            .put("client", a.client)
-                            .put("method", a.method)
-                            .put("params", JSONArray(a.params))
-                            .put("outcome", a.outcome)
-                            .put("ms", a.ms)
-                    )
-                }
-            }
+    /** The fields a search looks at (not hashes). */
+    fun searchText(e: JSONObject): String =
+        listOf("component", "message", "client", "method", "outcome", "peer", "local").joinToString(
+            " "
+        ) {
+            e.optString(it)
         }
 }

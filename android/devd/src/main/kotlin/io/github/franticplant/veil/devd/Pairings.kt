@@ -29,6 +29,9 @@ class PairingRequest(
     val requestedScopes: Set<String>,
     val code: String,
     val createdMs: Long,
+    /** The listener address it arrived on, and the peer's address. */
+    val local: String,
+    val peer: String,
 ) {
     val result = CompletableFuture<Pairing?>()
 }
@@ -55,7 +58,14 @@ class Pairings(context: Context, private val log: DevdLog) {
      * Opens a request. One may be pending at a time and at most [MAX_REQUESTS] are allowed per
      * [WINDOW_MS] in total (not per address: on loopback every app shares one).
      */
-    fun request(clientId: String, name: String, scopes: Set<String>, code: String): PairingRequest {
+    fun request(
+        clientId: String,
+        name: String,
+        scopes: Set<String>,
+        code: String,
+        local: String,
+        peer: String,
+    ): PairingRequest {
         val now = System.currentTimeMillis()
         synchronized(requestTimes) {
             while (requestTimes.isNotEmpty() && now - requestTimes.first() > WINDOW_MS) requestTimes
@@ -69,7 +79,15 @@ class Pairings(context: Context, private val log: DevdLog) {
             requestTimes.addLast(now)
         }
         val req =
-            PairingRequest(clientId, name.take(64), scopes.intersect(Scope.ALL.toSet()), code, now)
+            PairingRequest(
+                clientId,
+                name.take(64),
+                scopes.intersect(Scope.ALL.toSet()),
+                code,
+                now,
+                local,
+                peer,
+            )
         if (!_pending.compareAndSet(null, req)) {
             throw ApiException(
                 ErrorCode.RATE_LIMITED,
@@ -78,7 +96,8 @@ class Pairings(context: Context, private val log: DevdLog) {
         }
         log.info(
             "pairing",
-            "request from '${req.name}' (${clientId.take(16)}), scopes ${req.requestedScopes}",
+            "request from '${req.name}' (${clientId.take(16)}) on $local from $peer, " +
+                "scopes ${req.requestedScopes}",
         )
         return req
     }

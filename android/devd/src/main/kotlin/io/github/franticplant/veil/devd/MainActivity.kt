@@ -24,6 +24,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -37,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -64,7 +67,20 @@ class MainActivity : ComponentActivity() {
         val app = application as DevdApp
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                Surface(Modifier.fillMaxSize()) { Screen(app) }
+                Surface(Modifier.fillMaxSize()) {
+                    var tab by remember { mutableIntStateOf(0) }
+                    Column(Modifier.safeDrawingPadding()) {
+                        TabRow(selectedTabIndex = tab) {
+                            Tab(
+                                selected = tab == 0,
+                                onClick = { tab = 0 },
+                                text = { Text("Status") },
+                            )
+                            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Logs") })
+                        }
+                        if (tab == 0) Screen(app) else LogViewer(app)
+                    }
+                }
             }
         }
     }
@@ -76,7 +92,7 @@ class MainActivity : ComponentActivity() {
         val settings by app.settings.values.collectAsState()
         val pending by app.pairings.pending.collectAsState()
         val pairings by app.pairings.all.collectAsState()
-        val recent by app.access.recent.collectAsState()
+        val binds by app.server.binds.collectAsState()
         var tick by remember { mutableIntStateOf(0) }
         LaunchedEffect(Unit) {
             while (true) {
@@ -87,7 +103,7 @@ class MainActivity : ComponentActivity() {
         val time = DateFormat.getTimeInstance(DateFormat.SHORT)
 
         Column(
-            Modifier.safeDrawingPadding().padding(16.dp).verticalScroll(rememberScrollState()),
+            Modifier.padding(16.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("Veil devd", fontSize = 22.sp, fontWeight = FontWeight.Bold)
@@ -116,26 +132,59 @@ class MainActivity : ComponentActivity() {
                     } else {
                         Text("Off")
                     }
-                    Text("Also listen on (loopback is always on):")
+                    Text("Listen on:", style = MaterialTheme.typography.labelLarge)
                     val ifaces = remember(tick) { ipv4Interfaces() }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        FilterChip(
-                            selected = settings.iface == null,
-                            onClick = { app.settings.update(settings.copy(iface = null)) },
-                            label = { Text("nothing else") },
-                        )
+                    @Composable
+                    fun IfaceRow(
+                        name: String,
+                        addrs: String,
+                        on: Boolean,
+                        toggle: (Boolean) -> Unit,
+                    ) {
+                        val mine = binds.filter { it.iface == name }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(name, fontFamily = FontFamily.Monospace)
+                                Text(addrs, style = MaterialTheme.typography.bodySmall)
+                                if (on && offAt != null) {
+                                    for (b in mine) {
+                                        val (label, color) =
+                                            when (b.state) {
+                                                "listening" ->
+                                                    "listening on ${b.address}" to Color(0xFF98C379)
+                                                "down" -> "not up: ${b.detail}" to Color(0xFFE5C07B)
+                                                else ->
+                                                    "${b.address}: ${b.detail}" to Color(0xFFE06C75)
+                                            }
+                                        Text(label, color = color, fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                            Switch(checked = on, onCheckedChange = toggle)
+                        }
                     }
-                    for ((name, addrs) in ifaces) {
-                        FilterChip(
-                            selected = settings.iface == name,
-                            onClick = { app.settings.update(settings.copy(iface = name)) },
-                            label = {
-                                Text("$name  ${addrs.joinToString { it.hostAddress ?: "" }}")
-                            },
-                        )
+                    IfaceRow(
+                        Server.LOOPBACK,
+                        "127.0.0.1 (this phone; tailnet forwards arrive here)",
+                        settings.loopback,
+                    ) { on ->
+                        app.settings.update(settings.copy(loopback = on))
                     }
-                    if (settings.iface != null && ifaces.none { it.first == settings.iface }) {
-                        Text("${settings.iface} is not up now; devd binds it when it appears.")
+                    val names = (ifaces.map { it.first } + settings.ifaces).distinct().sorted()
+                    for (name in names) {
+                        val addrs =
+                            ifaces
+                                .firstOrNull { it.first == name }
+                                ?.second
+                                ?.joinToString { it.hostAddress ?: "" }
+                        IfaceRow(name, addrs ?: "not up now", name in settings.ifaces) { on ->
+                            app.settings.update(
+                                settings.copy(
+                                    ifaces =
+                                        if (on) settings.ifaces + name else settings.ifaces - name
+                                )
+                            )
+                        }
                     }
                     Text("Port ${settings.port}. Auto-off after:")
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -208,19 +257,10 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            Card {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("Recent calls", fontWeight = FontWeight.Bold)
-                    if (recent.isEmpty()) Text("None yet.")
-                    for (a in recent) {
-                        Text(
-                            "${time.format(Date(a.unixMs))} ${a.client} ${a.method} ${a.outcome} ${a.ms}ms",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp,
-                        )
-                    }
-                }
-            }
+            Text(
+                "API calls and devd's own log are in the Logs tab (persistent, hash-chained).",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 
@@ -235,6 +275,13 @@ class MainActivity : ComponentActivity() {
             ) {
                 Text("Pairing request", fontWeight = FontWeight.Bold)
                 Text("'${req.name}' wants to control Veil.")
+                Text(
+                    "Arrived on ${req.local} from ${req.peer}" +
+                        if (req.peer.startsWith("127."))
+                            " (loopback: a local app or a forward, e.g. the tailnet)"
+                        else "",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 Text("Code: ${req.code}", fontSize = 28.sp, fontFamily = FontFamily.Monospace)
                 Text(
                     "Approve only if the laptop shows the same code.",

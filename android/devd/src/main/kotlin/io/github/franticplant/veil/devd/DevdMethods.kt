@@ -62,7 +62,22 @@ class DevdMethods(private val app: DevdApp) {
                     JSONObject()
                         .put("addresses", JSONArray(app.server.addresses.value))
                         .put("port", v.port)
-                        .put("interface", v.iface ?: JSONObject.NULL)
+                        .put("loopback", v.loopback)
+                        .put("interfaces", JSONArray(v.ifaces.sorted()))
+                        .put(
+                            "binds",
+                            JSONArray().apply {
+                                for (b in app.server.binds.value) {
+                                    put(
+                                        JSONObject()
+                                            .put("interface", b.iface)
+                                            .put("address", b.address ?: JSONObject.NULL)
+                                            .put("state", b.state)
+                                            .put("detail", b.detail)
+                                    )
+                                }
+                            },
+                        )
                         .put("offAtMs", app.offAtMs.value ?: JSONObject.NULL)
                         .put("connections", app.server.activeConnections),
                 )
@@ -116,17 +131,30 @@ class DevdMethods(private val app: DevdApp) {
             method(
                 "devd.logs",
                 Scope.READ,
-                "devd's own log (listener, pairing, updates, hooks).",
+                "devd's journal: its log (listener, pairing, updates, hooks) and, with kind=access or " +
+                    "all, the access log. Persistent and hash-chained; oldest first after a cursor.",
                 false,
                 long("after", "Entries with seq greater than this (default 0).", min = 0),
                 int("max", "At most this many (default 200).", min = 1, max = 1000),
-                str("grep", "Only entries containing this text."),
+                str(
+                    "kind",
+                    "Which entries (default log).",
+                    choices = listOf("log", "access", "all"),
+                ),
+                str("level", "Minimum level.", choices = listOf("debug", "info", "warn", "error")),
+                str("component", "Only this component."),
+                str("grep", "Only entries containing this text (case-insensitive)."),
             )
         ) { p ->
-            app.log.read(
+            app.journal.read(
                 p.longOr("after", 0),
                 p.intOr("max", 200),
-                if (p.has("grep")) p.string("grep") else null,
+                JournalFilter.of(
+                    p.stringOr("kind", "log"),
+                    if (p.has("level")) p.string("level") else null,
+                    if (p.has("component")) p.string("component") else null,
+                    if (p.has("grep")) p.string("grep") else null,
+                ),
             )
         }
 
@@ -134,12 +162,34 @@ class DevdMethods(private val app: DevdApp) {
             method(
                 "devd.accessLog",
                 Scope.READ,
-                "Recent API calls: client, method, parameter names (never values), outcome, duration.",
+                "The newest API calls: client, method, parameter names (never values), outcome, " +
+                    "duration, and the listener and peer addresses.",
                 false,
-                int("max", "At most this many, newest last (default 100).", min = 1, max = 500),
+                int("max", "At most this many, oldest first (default 100).", min = 1, max = 1000),
             )
         ) { p ->
-            app.access.read(p.intOr("max", 100))
+            app.journal.tail(p.intOr("max", 100), JournalFilter.of("access"))
+        }
+
+        table.add(
+            method(
+                "journal.head",
+                Scope.READ,
+                "The journal's newest seq and hash. Keep it: a later journal.verify plus a read of " +
+                    "that seq shows whether anything up to it was rewritten or cut.",
+            )
+        ) {
+            app.journal.head()
+        }
+
+        table.add(
+            method(
+                "journal.verify",
+                Scope.READ,
+                "Walks the whole hash chain and reports the first break, if any.",
+            )
+        ) {
+            app.journal.verify()
         }
 
         table.add(

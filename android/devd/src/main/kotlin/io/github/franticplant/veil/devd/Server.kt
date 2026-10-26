@@ -67,7 +67,12 @@ class Server(private val app: DevdApp) {
             Thread(
                     {
                         while (running) {
-                            reconcile()
+                            try {
+                                reconcile()
+                            } catch (e: Exception) {
+                                // Keep watching: one bad pass must not end the listener.
+                                app.log.warn("listener", "reconcile failed: $e")
+                            }
                             try {
                                 Thread.sleep(3_000)
                             } catch (e: InterruptedException) {
@@ -95,48 +100,98 @@ class Server(private val app: DevdApp) {
         listeners.clear()
         clients.forEach { closeQuietly(it) }
         _addresses.value = emptyList()
+        _binds.value = emptyList()
+        reported.clear()
     }
 
-    /** Binds loopback and the chosen interface's IPv4 addresses; closes anything else. */
+    /**
+     * One thing the listener should be on: loopback, or an enabled interface. [address] is
+     * "addr:port" when there is one; [state] is "listening", "down" (the interface has no IPv4
+     * address now) or "error" with [detail].
+     */
+    data class Bind(
+        val iface: String,
+        val address: String?,
+        val state: String,
+        val detail: String = "",
+    )
+
+    private val _binds = MutableStateFlow<List<Bind>>(emptyList())
+    private val reported = HashMap<String, String>()
+
+    /** The state of each enabled interface and address, for the screen and devd.info. */
+    val binds: StateFlow<List<Bind>> = _binds
+
+    /** Binds loopback and the enabled interfaces' IPv4 addresses; closes anything else. */
     private fun reconcile() {
         val v = app.settings.values.value
-        val want = LinkedHashSet<String>()
-        want.add("127.0.0.1")
-        v.iface?.let { name ->
-            ipv4Interfaces()
-                .firstOrNull { it.first == name }
-                ?.second
-                ?.forEach { a -> a.hostAddress?.let(want::add) }
+        val up = ipv4Interfaces().toMap()
+        // iface name -> its addresses now (empty: down).
+        val wanted = LinkedHashMap<String, List<String>>()
+        if (v.loopback) wanted[LOOPBACK] = listOf("127.0.0.1")
+        for (name in v.ifaces.sorted()) {
+            wanted[name] = up[name].orEmpty().mapNotNull { it.hostAddress }
         }
-        val keys = want.map { "$it:${v.port}" }.toSet()
-        for ((key, s) in listeners) {
-            if (key !in keys || s.isClosed) {
-                closeQuietly(s)
+        val keys = wanted.values.flatten().map { "$it:${v.port}" }.toSet()
+        for ((key, sock) in listeners) {
+            if (key !in keys || sock.isClosed) {
+                closeQuietly(sock)
                 listeners.remove(key)
                 app.log.info("listener", "closed $key")
             }
         }
-        for (addr in want) {
-            val key = "$addr:${v.port}"
-            if (listeners.containsKey(key) || !running) continue
-            try {
-                val s = tls.serverSocketFactory.createServerSocket() as SSLServerSocket
-                s.reuseAddress = true
-                s.bind(InetSocketAddress(InetAddress.getByName(addr), v.port), 16)
-                s.needClientAuth = true
-                s.enabledProtocols = arrayOf("TLSv1.3")
-                listeners[key] = s
-                app.log.info("listener", "listening on $key")
-                Thread({ accept(s, key) }, "devd-accept-$key").apply {
-                    isDaemon = true
-                    start()
+        val binds = ArrayList<Bind>()
+        for ((iface, addrs) in wanted) {
+            if (addrs.isEmpty()) {
+                binds.add(Bind(iface, null, "down", "no IPv4 address; bound when it has one"))
+                continue
+            }
+            for (addr in addrs) {
+                val key = "$addr:${v.port}"
+                if (!listeners.containsKey(key) && running) {
+                    val error = bind(addr, v.port, key)
+                    if (error != null) {
+                        binds.add(Bind(iface, key, "error", error))
+                        report(key, "error: $error") {
+                            app.log.warn("listener", "cannot listen on $key: $error")
+                        }
+                        continue
+                    }
                 }
-            } catch (e: IOException) {
-                app.log.warn("listener", "cannot listen on $key: ${e.message}")
+                binds.add(Bind(iface, key, "listening"))
+                report(key, "listening") { app.log.info("listener", "listening on $key ($iface)") }
             }
         }
+        _binds.value = binds
         _addresses.value = listeners.keys.sorted()
     }
+
+    /** Logs [what] for [key] only when it changed since the last pass. */
+    private fun report(key: String, what: String, log: () -> Unit) {
+        if (reported[key] != what) {
+            reported[key] = what
+            log()
+        }
+    }
+
+    /** Opens a listener on [addr]; returns why not, or null. */
+    private fun bind(addr: String, port: Int, key: String): String? =
+        try {
+            val sock = tls.serverSocketFactory.createServerSocket() as SSLServerSocket
+            sock.reuseAddress = true
+            sock.bind(InetSocketAddress(InetAddress.getByName(addr), port), 16)
+            sock.needClientAuth = true
+            sock.enabledProtocols = arrayOf("TLSv1.3")
+            listeners[key] = sock
+            Thread({ accept(sock, key) }, "devd-accept-$key").apply {
+                isDaemon = true
+                start()
+            }
+            null
+        } catch (e: Exception) {
+            // IOException for the socket; a Keystore or TLS failure is reported, not fatal.
+            "${e.javaClass.simpleName}: ${e.message}"
+        }
 
     private fun accept(server: SSLServerSocket, key: String) {
         while (running && !server.isClosed) {
@@ -175,7 +230,8 @@ class Server(private val app: DevdApp) {
     }
 
     private fun serve(sock: SSLSocket) {
-        val peer = sock.remoteSocketAddress.toString()
+        val peer = addr(sock.remoteSocketAddress)
+        val local = addr(sock.localSocketAddress)
         val clientCert =
             try {
                 sock.soTimeout = HANDSHAKE_TIMEOUT_MS
@@ -224,7 +280,7 @@ class Server(private val app: DevdApp) {
                     )
                     continue
                 }
-            val reply = dispatch(clientId, clientCert, req)
+            val reply = dispatch(Conn(clientId, clientCert, local, peer), req)
             reply.put("id", req.opt("id") ?: JSONObject.NULL)
             try {
                 write(output, reply)
@@ -241,7 +297,19 @@ class Server(private val app: DevdApp) {
         out.flush()
     }
 
-    private fun dispatch(clientId: String, clientCert: ByteArray, req: JSONObject): JSONObject {
+    /** Who is on a connection and where it arrived. */
+    private class Conn(
+        val clientId: String,
+        val clientCert: ByteArray,
+        val local: String,
+        val peer: String,
+    )
+
+    private fun addr(a: java.net.SocketAddress?): String =
+        (a as? InetSocketAddress)?.let { "${it.address.hostAddress}:${it.port}" } ?: a.toString()
+
+    private fun dispatch(conn: Conn, req: JSONObject): JSONObject {
+        val clientId = conn.clientId
         val t0 = System.nanoTime()
         val method = req.optString("method")
         val raw = req.optJSONObject("params") ?: JSONObject()
@@ -252,7 +320,7 @@ class Server(private val app: DevdApp) {
             try {
                 when {
                     method == "devd.hello" -> Reply.ok(hello(pairing, clientId))
-                    method == "pair.request" -> Reply.ok(pair(clientId, clientCert, raw))
+                    method == "pair.request" -> Reply.ok(pair(conn, raw))
                     pairing == null -> {
                         throttleUnpaired()
                         Reply.error(
@@ -283,12 +351,13 @@ class Server(private val app: DevdApp) {
         val outcome = reply.optJSONObject("error")?.optString("code") ?: "ok"
         app.access.add(
             Access(
-                System.currentTimeMillis(),
                 client,
                 method.take(64),
                 paramNames,
                 outcome,
                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0),
+                conn.local,
+                conn.peer,
             )
         )
         return reply
@@ -347,12 +416,13 @@ class Server(private val app: DevdApp) {
      * Asks the user on the phone. Blocks until they decide or [Pairings.REQUEST_TIMEOUT_MS] passes.
      * The code shown on the phone must match the one the client shows.
      */
-    private fun pair(clientId: String, clientCert: ByteArray, raw: JSONObject): JSONObject {
+    private fun pair(conn: Conn, raw: JSONObject): JSONObject {
+        val clientId = conn.clientId
         val name = raw.optString("name").ifBlank { "unnamed client" }
         val scopesRaw = raw.optJSONArray("scopes") ?: JSONArray(Scope.ALL)
         val scopes = (0 until scopesRaw.length()).map { scopesRaw.getString(it) }.toSet()
-        val code = Tls.pairingCode(serverCert, clientCert)
-        val req = app.pairings.request(clientId, name, scopes, code)
+        val code = Tls.pairingCode(serverCert, conn.clientCert)
+        val req = app.pairings.request(clientId, name, scopes, code, conn.local, conn.peer)
         app.notifications.pairingRequest(req)
         val result =
             try {
@@ -396,6 +466,7 @@ class Server(private val app: DevdApp) {
     }
 
     companion object {
+        const val LOOPBACK = "loopback"
         const val MAX_CONNECTIONS = 8
         const val MAX_FRAME_BYTES = 4 * 1024 * 1024
         const val HANDSHAKE_TIMEOUT_MS = 10_000
