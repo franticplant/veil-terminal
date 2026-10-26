@@ -27,6 +27,7 @@ import io.github.franticplant.veil.engine.proto.SessionPhase
 import io.github.franticplant.veil.engine.proto.TermSize
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -300,16 +301,42 @@ internal constructor(
         send(ClientMsg.newBuilder().setCloseSession(CloseSession.newBuilder().setSessionId(id)))
     }
 
-    /** Sends a request; a refusal is surfaced as the session's detail, not thrown. */
-    private fun send(msg: ClientMsg.Builder) {
+    /**
+     * Everything this session sends, in order: one coroutine drains it, so input, resizes and acks
+     * reach the engine in the order they were made. (A coroutine per message would let a late
+     * resize overtake the final one.)
+     */
+    private val outbox = Channel<ClientMsg.Builder>(OUTBOX_CAPACITY)
+
+    init {
         registry.launch {
-            try {
-                conn.request(msg)
-            } catch (e: EngineClosedException) {
-                engineGone(e.message ?: "engine closed")
-            } catch (e: EngineException) {
-                // e.g. input refused while the session is busy; the session goes on.
+            for (msg in outbox) {
+                val reply =
+                    try {
+                        conn.post(msg)
+                    } catch (e: EngineClosedException) {
+                        engineGone(e.message ?: "engine closed")
+                        continue
+                    }
+                registry.launch {
+                    try {
+                        reply.await().expect(EngineMsg.BodyCase.ACK)
+                    } catch (e: EngineClosedException) {
+                        engineGone(e.message ?: "engine closed")
+                    } catch (e: EngineException) {
+                        // e.g. input refused while the session is busy; the session goes on.
+                        registry.log.warn("session", "request refused: ${e.message}", id)
+                    }
+                }
             }
+        }
+    }
+
+    /** Queues a request; a refusal is logged and surfaced as the session's detail, not thrown. */
+    private fun send(msg: ClientMsg.Builder) {
+        val r = outbox.trySend(msg)
+        if (r.isFailure && !r.isClosed) {
+            registry.log.warn("session", "outbox full; a request was dropped", id)
         }
     }
 
@@ -317,6 +344,8 @@ internal constructor(
         val name = phase.name.removePrefix("SESSION_PHASE_")
         registry.log.info("session", if (detail.isEmpty()) name else "$name: $detail", id)
         _status.value = SessionStatus(phase, detail)
+        // Requests already queued still go out; nothing new is accepted.
+        if (phase == SessionPhase.SESSION_PHASE_CLOSED) outbox.close()
         if (phase == SessionPhase.SESSION_PHASE_CLOSED) _prompt.value = null
     }
 
@@ -338,8 +367,8 @@ internal constructor(
             // The engine broke the render contract. Treat it as hostile: stop
             // listening to this session.
             registry.log.log(LogRing.Level.ERROR, "render", "invalid frame: ${e.message}", id)
-            onState(SessionPhase.SESSION_PHASE_CLOSED, "engine sent an invalid frame: ${e.message}")
             send(ClientMsg.newBuilder().setCloseSession(CloseSession.newBuilder().setSessionId(id)))
+            onState(SessionPhase.SESSION_PHASE_CLOSED, "engine sent an invalid frame: ${e.message}")
             return
         }
         _screenVersion.value = frame.seq
@@ -357,3 +386,6 @@ internal constructor(
         if (!_status.value.closed) onState(SessionPhase.SESSION_PHASE_CLOSED, reason)
     }
 }
+
+/** Requests a session may queue before new ones are dropped (and logged). */
+private const val OUTBOX_CAPACITY = 1024

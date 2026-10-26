@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -21,6 +22,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** The engine protocol version this client speaks (`Hello.protocol_version`). */
@@ -55,6 +58,7 @@ class EngineConnection private constructor(private val pipe: MessagePipe, scope:
     }
 
     private val nextId = AtomicLong(1)
+    private val sendLock = Mutex()
     private val pending = ConcurrentHashMap<Long, CompletableDeferred<EngineMsg>>()
     // Events are not dropped: when the buffer is full the reader stops reading,
     // which stops the engine (its queue fills). Something must collect events
@@ -74,12 +78,21 @@ class EngineConnection private constructor(private val pipe: MessagePipe, scope:
     private val reader: Job = scope.launch(Dispatchers.IO) { readLoop() }
 
     /** Sends [msg] with a fresh request ID and waits for the matching reply. */
-    suspend fun request(msg: ClientMsg.Builder): EngineMsg {
+    suspend fun request(msg: ClientMsg.Builder): EngineMsg = post(msg).await()
+
+    /**
+     * Sends [msg] with a fresh request ID and returns its reply, to await separately. Messages
+     * posted one after another reach the engine in that order (the pipe is written under a lock),
+     * so a caller that must keep order (a session's input and resizes) posts sequentially and
+     * awaits the replies elsewhere, without a round trip per message.
+     */
+    suspend fun post(msg: ClientMsg.Builder): Deferred<EngineMsg> {
         (state.value as? State.Closed)?.let { throw EngineClosedException(it.reason) }
-        val id = nextId.getAndIncrement()
         val reply = CompletableDeferred<EngineMsg>()
-        pending[id] = reply
-        try {
+        reply.invokeOnCompletion { pending.values.remove(reply) }
+        sendLock.withLock {
+            val id = nextId.getAndIncrement()
+            pending[id] = reply
             val bytes = msg.setRequestId(id).build().toByteArray()
             withContext(Dispatchers.IO) {
                 try {
@@ -88,10 +101,8 @@ class EngineConnection private constructor(private val pipe: MessagePipe, scope:
                     shutDown(e.message ?: "engine closed")
                 }
             }
-            return reply.await()
-        } finally {
-            pending.remove(id)
         }
+        return reply
     }
 
     /** A round trip to the engine. */
