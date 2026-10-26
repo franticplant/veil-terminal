@@ -4,6 +4,7 @@ import android.os.Debug
 import android.os.Process
 import android.os.SystemClock
 import io.github.franticplant.veil.BuildConfig
+import io.github.franticplant.veil.CrashRecorder
 import io.github.franticplant.veil.VeilApplication
 import io.github.franticplant.veil.dev.api.ApiException
 import io.github.franticplant.veil.dev.api.ErrorCode
@@ -96,6 +97,53 @@ class AppMethods(private val app: VeilApplication) {
                 )
                 .put("sessions", registry.sessions.value.size)
                 .put("liveSessions", registry.sessions.value.count { !it.status.value.closed })
+        }
+
+        table.add(
+            method(
+                "app.exits",
+                Scope.READ,
+                "Why recent Veil processes ended (Android's exit history: crash, native crash, ANR, " +
+                    "low memory, killed, package update, ...) and the stack traces of recorded crashes.",
+                false,
+                int("max", "At most this many exits (default 10).", min = 1, max = 50),
+            )
+        ) { p ->
+            val am = app.getSystemService(android.app.ActivityManager::class.java)
+            val exits = am.getHistoricalProcessExitReasons(null, 0, p.intOr("max", 10))
+            val crashes =
+                CrashRecorder.dir(app).listFiles()?.sortedByDescending { it.name }.orEmpty()
+            JSONObject()
+                .put(
+                    "exits",
+                    JSONArray().apply {
+                        for (x in exits) {
+                            put(
+                                JSONObject()
+                                    .put("pid", x.pid)
+                                    .put("unixMs", x.timestamp)
+                                    .put("reason", exitReason(x.reason))
+                                    .put("status", x.status)
+                                    .put("description", x.description ?: "")
+                                    .put("importance", x.importance)
+                                    .put("pssKb", x.pss)
+                                    .put("rssKb", x.rss)
+                            )
+                        }
+                    },
+                )
+                .put(
+                    "crashes",
+                    JSONArray().apply {
+                        for (f in crashes) {
+                            put(
+                                JSONObject()
+                                    .put("file", f.name)
+                                    .put("trace", f.readText().take(16_000))
+                            )
+                        }
+                    },
+                )
         }
 
         table.add(
@@ -773,6 +821,29 @@ class AppMethods(private val app: VeilApplication) {
         for ((i, l) in lines.withIndex()) if (regex.containsMatchIn(l)) return i to l
         return null
     }
+
+    private fun exitReason(r: Int): String =
+        when (r) {
+            android.app.ApplicationExitInfo.REASON_ANR -> "anr"
+            android.app.ApplicationExitInfo.REASON_CRASH -> "crash"
+            android.app.ApplicationExitInfo.REASON_CRASH_NATIVE -> "crash-native"
+            android.app.ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "dependency-died"
+            android.app.ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE ->
+                "excessive-resource-usage"
+            android.app.ApplicationExitInfo.REASON_EXIT_SELF -> "exit-self"
+            android.app.ApplicationExitInfo.REASON_FREEZER -> "freezer"
+            android.app.ApplicationExitInfo.REASON_INITIALIZATION_FAILURE ->
+                "initialization-failure"
+            android.app.ApplicationExitInfo.REASON_LOW_MEMORY -> "low-memory"
+            android.app.ApplicationExitInfo.REASON_OTHER -> "other"
+            android.app.ApplicationExitInfo.REASON_PACKAGE_STATE_CHANGE -> "package-state-change"
+            android.app.ApplicationExitInfo.REASON_PACKAGE_UPDATED -> "package-updated"
+            android.app.ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "permission-change"
+            android.app.ApplicationExitInfo.REASON_SIGNALED -> "signaled"
+            android.app.ApplicationExitInfo.REASON_USER_REQUESTED -> "user-requested"
+            android.app.ApplicationExitInfo.REASON_USER_STOPPED -> "user-stopped"
+            else -> "unknown($r)"
+        }
 
     private fun processStats(): JSONObject {
         val rt = Runtime.getRuntime()

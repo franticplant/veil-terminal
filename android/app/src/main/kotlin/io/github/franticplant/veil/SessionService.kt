@@ -12,10 +12,12 @@ import android.os.IBinder
 import io.github.franticplant.veil.engine.SessionRegistry
 import io.github.franticplant.veil.frontend.MainActivity
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.transformLatest
 
 /**
  * A foreground service that exists while sessions are live, so Android keeps the process (and the
@@ -26,16 +28,23 @@ class SessionService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val live = intent?.getIntExtra(EXTRA_LIVE, 0) ?: 0
+        // Always enter the foreground first, even when about to stop: a start through
+        // startForegroundService that ends without startForeground() kills the process
+        // (ForegroundServiceDidNotStartInTimeException), and the stop can overtake the start when
+        // a session opens and closes quickly.
+        try {
+            startForeground(
+                NOTIFICATION_ID,
+                notification(live),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } catch (e: IllegalStateException) {
+            // Not allowed from the background (a plain start while the app is not visible).
+        }
         if (live == 0) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
-            return START_NOT_STICKY
         }
-        startForeground(
-            NOTIFICATION_ID,
-            notification(live),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-        )
         return START_NOT_STICKY
     }
 
@@ -63,6 +72,7 @@ class SessionService : Service() {
         private const val CHANNEL = "sessions"
         private const val NOTIFICATION_ID = 1
         private const val EXTRA_LIVE = "live"
+        private const val STOP_DELAY_MS = 5_000L
 
         /** Starts, updates and stops the service as the number of live sessions changes. */
         @OptIn(ExperimentalCoroutinesApi::class)
@@ -71,6 +81,13 @@ class SessionService : Service() {
                 .flatMapLatest { list ->
                     if (list.isEmpty()) flowOf(0)
                     else combine(list.map { it.status }) { states -> states.count { !it.closed } }
+                }
+                .distinctUntilChanged()
+                // Stop only once nothing has been live for a moment, so quick close/open cycles
+                // keep one foreground service instead of starting and stopping it each time.
+                .transformLatest { live ->
+                    if (live == 0) delay(STOP_DELAY_MS)
+                    emit(live)
                 }
                 .distinctUntilChanged()
                 .collect { live ->

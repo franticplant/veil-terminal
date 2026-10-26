@@ -55,6 +55,7 @@ class VeilApplication : Application(), EngineHost {
 
     override fun onCreate() {
         super.onCreate()
+        CrashRecorder.install(this, log)
         log.info(
             "app",
             "process started: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
