@@ -1,7 +1,11 @@
 package io.github.franticplant.veil.frontend
 
+import android.app.Activity
+import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -49,6 +53,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -56,6 +61,10 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import io.github.franticplant.veil.engine.ClipboardOffer
 import io.github.franticplant.veil.engine.Prompt
 import io.github.franticplant.veil.engine.Session
 import io.github.franticplant.veil.engine.Target
@@ -100,6 +109,22 @@ private fun VeilApp(host: EngineHost, profiles: Profiles) {
     var lastGrid by remember { mutableStateOf(DEFAULT_COLS to DEFAULT_ROWS) }
     val scope = rememberCoroutineScope()
     val current = sessions.firstOrNull { it.id == currentId }
+    val ui by host.uiPrefs.values.collectAsState()
+    val inTerminal = !showHosts && current != null
+    val immersive = ui.fullscreen && inTerminal
+    val activity = LocalContext.current as? Activity
+    // Immersive: the system bars hide and come back with a swipe from the edge.
+    LaunchedEffect(immersive) {
+        val window = activity?.window ?: return@LaunchedEffect
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        if (immersive) {
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
 
     fun connect(target: Target) {
         scope.launch {
@@ -114,20 +139,23 @@ private fun VeilApp(host: EngineHost, profiles: Profiles) {
     }
 
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-        SessionTabs(
-            sessions = sessions,
-            current = if (showHosts) null else current,
-            onSelect = {
-                currentId = it.id
-                showHosts = false
-            },
-            onHosts = { showHosts = true },
-        )
+        if (!immersive) {
+            SessionTabs(
+                sessions = sessions,
+                current = if (showHosts) null else current,
+                onSelect = {
+                    currentId = it.id
+                    showHosts = false
+                },
+                onHosts = { showHosts = true },
+            )
+        }
         if (showHosts || current == null) {
             HostsScreen(host, profiles, onConnect = ::connect)
         } else {
             TerminalScreen(
                 session = current,
+                prefs = host.uiPrefs,
                 onGrid = { lastGrid = it },
                 onReconnect = {
                     host.sessions.forget(current)
@@ -337,6 +365,7 @@ private fun ProfileDialog(
 @Composable
 private fun TerminalScreen(
     session: Session,
+    prefs: UiPrefs,
     onGrid: (Pair<Int, Int>) -> Unit,
     onReconnect: () -> Unit,
     onDismiss: () -> Unit,
@@ -346,6 +375,20 @@ private fun TerminalScreen(
     val version by session.screenVersion.collectAsState()
     var view by remember { mutableStateOf<TerminalView?>(null) }
     val stickyState = remember { mutableStateListOf(false, false) } // ctrl, alt
+    val ui by prefs.values.collectAsState()
+    val context = LocalContext.current
+    var offer by remember { mutableStateOf<ClipboardOffer?>(null) }
+
+    // Clipboard offers from the remote (OSC 52), under the user's policy.
+    LaunchedEffect(session) {
+        session.clipboard.collect { o ->
+            when (prefs.values.value.clipboard) {
+                UiPrefs.ClipboardPolicy.ALLOW -> copyToClipboard(context, o)
+                UiPrefs.ClipboardPolicy.DENY -> {}
+                UiPrefs.ClipboardPolicy.ASK -> offer = o
+            }
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -353,10 +396,13 @@ private fun TerminalScreen(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     TerminalView(ctx).apply {
+                        fontSizeSp = prefs.values.value.fontSizeSp
                         onStickyConsumed = {
                             stickyState[0] = false
                             stickyState[1] = false
                         }
+                        onFontSizeChanged = { size -> prefs.update { it.copy(fontSizeSp = size) } }
+                        onPasteRequest = { pasteClipboard(ctx, this) }
                     }
                 },
                 update = { v ->
@@ -370,6 +416,19 @@ private fun TerminalScreen(
                     v.stickyAlt = stickyState[1]
                 },
             )
+            if (!ui.extraKeys) {
+                // The keys bar is hidden: a small handle brings it back.
+                Box(
+                    Modifier.align(Alignment.BottomEnd)
+                        .padding(6.dp)
+                        .size(36.dp)
+                        .background(Color(0x99303643), CircleShape)
+                        .clickable { prefs.update { it.copy(extraKeys = true) } },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("▴", color = Color(0xFFD8DEE9))
+                }
+            }
         }
         // Redraw on every new frame.
         LaunchedEffect(version) { view?.invalidate() }
@@ -377,12 +436,33 @@ private fun TerminalScreen(
         if (status.phase != SessionPhase.SESSION_PHASE_OPEN) {
             StatusLine(status.phase, status.detail, status.closed, onReconnect, onDismiss)
         }
-        ExtraKeys(
-            view = view,
-            ctrl = stickyState[0],
-            alt = stickyState[1],
-            onCtrl = { stickyState[0] = !stickyState[0] },
-            onAlt = { stickyState[1] = !stickyState[1] },
+        if (ui.extraKeys) {
+            ExtraKeys(
+                view = view,
+                ctrl = stickyState[0],
+                alt = stickyState[1],
+                fullscreen = ui.fullscreen,
+                onCtrl = { stickyState[0] = !stickyState[0] },
+                onAlt = { stickyState[1] = !stickyState[1] },
+                onHide = { prefs.update { it.copy(extraKeys = false) } },
+                onFullscreen = { prefs.update { it.copy(fullscreen = !it.fullscreen) } },
+            )
+        }
+    }
+
+    offer?.let { o ->
+        ClipboardDialog(
+            o,
+            onCopy = {
+                copyToClipboard(context, o)
+                offer = null
+            },
+            onAlways = {
+                copyToClipboard(context, o)
+                prefs.update { it.copy(clipboard = UiPrefs.ClipboardPolicy.ALLOW) }
+                offer = null
+            },
+            onIgnore = { offer = null },
         )
     }
 
@@ -434,8 +514,11 @@ private fun ExtraKeys(
     view: TerminalView?,
     ctrl: Boolean,
     alt: Boolean,
+    fullscreen: Boolean,
     onCtrl: () -> Unit,
     onAlt: () -> Unit,
+    onHide: () -> Unit,
+    onFullscreen: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     @Composable
@@ -459,6 +542,9 @@ private fun ExtraKeys(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(1.dp),
     ) {
+        K("▾", action = onHide)
+        K(if (fullscreen) "⤡" else "⤢", fullscreen, onFullscreen)
+        K("⌨") { view?.showKeyboard() }
         K("Esc") { view?.sendKey(Key.ESCAPE) }
         K("Ctrl", ctrl, onCtrl)
         K("Alt", alt, onAlt)
@@ -472,12 +558,7 @@ private fun ExtraKeys(
         K("PgUp") { view?.sendKey(Key.PAGE_UP) }
         K("PgDn") { view?.sendKey(Key.PAGE_DOWN) }
         for (c in listOf("|", "~", "/", "-")) K(c) { view?.sendText(c) }
-        K("Paste") {
-            val clip = context.getSystemService(ClipboardManager::class.java).primaryClip
-            val text =
-                clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
-            if (!text.isNullOrEmpty()) view?.paste(text)
-        }
+        K("Paste") { view?.let { pasteClipboard(context, it) } }
         K("A−") { view?.let { it.fontSizeSp -= 1f } }
         K("A+") { view?.let { it.fontSizeSp += 1f } }
         K("⌨") { view?.showKeyboard() }
@@ -557,5 +638,59 @@ private fun AuthDialog(p: AuthPrompt, answer: (List<String>?) -> Unit) {
         },
         confirmButton = { Button(onClick = { answer(values.toList()) }) { Text("Sign in") } },
         dismissButton = { TextButton(onClick = { answer(null) }) { Text("Cancel") } },
+    )
+}
+
+private fun pasteClipboard(context: Context, view: TerminalView) {
+    val clip = context.getSystemService(ClipboardManager::class.java).primaryClip
+    val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
+    if (!text.isNullOrEmpty()) view.paste(text)
+}
+
+private fun copyToClipboard(context: Context, offer: ClipboardOffer) {
+    context
+        .getSystemService(ClipboardManager::class.java)
+        .setPrimaryClip(ClipData.newPlainText("remote", offer.text))
+    Toast.makeText(
+            context,
+            "Copied ${offer.text.length} characters from the remote",
+            Toast.LENGTH_SHORT,
+        )
+        .show()
+}
+
+/** The remote wants to set the clipboard. Shows what, as plain text, before anything is copied. */
+@Composable
+private fun ClipboardDialog(
+    offer: ClipboardOffer,
+    onCopy: () -> Unit,
+    onAlways: () -> Unit,
+    onIgnore: () -> Unit,
+) {
+    val preview = offer.text.take(400) + if (offer.text.length > 400) "…" else ""
+    AlertDialog(
+        onDismissRequest = onIgnore,
+        title = { Text("Copy from the remote?") },
+        text = {
+            Column {
+                Text(
+                    "The remote program wants to put ${offer.text.length} characters on the clipboard:"
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    preview,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    modifier = Modifier.fillMaxWidth().background(Color(0xFF1C2028)).padding(8.dp),
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onCopy) { Text("Copy") } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onAlways) { Text("Always") }
+                TextButton(onClick = onIgnore) { Text("Ignore") }
+            }
+        },
     )
 }

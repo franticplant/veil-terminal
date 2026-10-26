@@ -8,15 +8,17 @@
 //! appear in this crate's API, so it can be replaced without touching the
 //! protocol or any frontend.
 //!
-//! Remote requests that would reach outside the terminal are refused here:
-//! OSC 52 clipboard access is disabled, and color or size queries go
-//! unanswered.
+//! Remote requests that would reach outside the terminal are narrowed here:
+//! OSC 52 may only *set* the clipboard (a bounded [`TermEvent::Clipboard`]
+//! the frontend may refuse); reading the clipboard is never possible. Color
+//! and size queries go unanswered.
 
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::term::ClipboardType;
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Processor};
@@ -26,6 +28,9 @@ use veil_protocol::{MAX_TITLE_CHARS, color};
 /// Lines of scrollback kept per terminal.
 pub const SCROLLBACK_LINES: usize = 5_000;
 
+/// The most text one OSC 52 copy may carry; longer ones are dropped.
+pub const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
+
 /// Something the remote side asked for that is not screen content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermEvent {
@@ -33,6 +38,13 @@ pub enum TermEvent {
     /// similar queries).
     Reply(Vec<u8>),
     Bell,
+    /// OSC 52: the remote asks to put `text` on the clipboard (`primary`:
+    /// the X11 primary selection rather than the clipboard). The frontend
+    /// decides whether to allow it.
+    Clipboard {
+        text: String,
+        primary: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -64,14 +76,18 @@ struct Listener {
 impl EventListener for Listener {
     fn send_event(&self, event: Event) {
         match event {
-            Event::PtyWrite(_) | Event::Bell | Event::Title(_) | Event::ResetTitle => {
+            Event::PtyWrite(_)
+            | Event::Bell
+            | Event::Title(_)
+            | Event::ResetTitle
+            | Event::ClipboardStore(..) => {
                 self.events
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push(event);
             }
-            // Clipboard (disabled anyway), color and size queries, cursor and
-            // redraw hints: nothing to forward.
+            // Clipboard reads (never allowed), color and size queries, cursor
+            // and redraw hints: nothing to forward.
             _ => {}
         }
     }
@@ -108,7 +124,9 @@ impl Terminal {
         let listener = Listener::default();
         let config = Config {
             scrolling_history: SCROLLBACK_LINES,
-            osc52: Osc52::Disabled,
+            // Copy only: a remote may offer text for the clipboard, never
+            // read it.
+            osc52: Osc52::OnlyCopy,
             ..Config::default()
         };
         let size = Size {
@@ -143,6 +161,12 @@ impl Terminal {
             match event {
                 Event::PtyWrite(text) => out.push(TermEvent::Reply(text.into_bytes())),
                 Event::Bell => out.push(TermEvent::Bell),
+                Event::ClipboardStore(ty, text) if text.len() <= MAX_CLIPBOARD_BYTES => {
+                    out.push(TermEvent::Clipboard {
+                        text,
+                        primary: matches!(ty, ClipboardType::Selection),
+                    })
+                }
                 Event::Title(title) => self.title = sanitize_title(&title),
                 Event::ResetTitle => self.title.clear(),
                 _ => {}
@@ -504,11 +528,19 @@ mod tests {
     }
 
     #[test]
-    fn osc52_clipboard_write_is_ignored() {
+    fn osc52_copy_becomes_an_event_and_reads_are_refused() {
         let mut t = Terminal::new(20, 4);
         // "hello" base64-encoded, sent to the clipboard.
         let events = t.feed(b"\x1b]52;c;aGVsbG8=\x07");
-        assert!(events.is_empty());
+        assert_eq!(
+            events,
+            vec![TermEvent::Clipboard {
+                text: "hello".into(),
+                primary: false
+            }]
+        );
+        // A request to read the clipboard gets no answer.
+        assert!(t.feed(b"\x1b]52;c;?\x07").is_empty());
     }
 
     #[test]

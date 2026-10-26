@@ -7,8 +7,10 @@ import android.graphics.Typeface
 import android.text.InputType
 import android.util.TypedValue
 import android.view.GestureDetector
+import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
@@ -17,6 +19,7 @@ import android.view.inputmethod.InputMethodManager
 import io.github.franticplant.veil.engine.ScreenModel
 import io.github.franticplant.veil.engine.Session
 import io.github.franticplant.veil.engine.proto.CursorShape
+import io.github.franticplant.veil.engine.proto.MouseMode
 import io.github.franticplant.veil.engine.proto.RunFlag
 import io.github.franticplant.veil.frontend.KeyEncoder.Key
 import io.github.franticplant.veil.frontend.KeyEncoder.Mods
@@ -197,7 +200,95 @@ class TerminalView(context: Context) : View(context) {
         }
     }
 
-    // ---- Touch ------------------------------------------------------------
+    // ---- Touch and mouse ----------------------------------------------------
+    //
+    // Fingers: a tap is a left click when the remote reports the mouse, otherwise it opens the
+    // keyboard (a long press always does). Dragging scrolls: wheel events when the remote reports
+    // the mouse, arrow keys on the alternate screen (less, vim), otherwise scrollback. Two fingers
+    // pinch the text size, which changes the grid.
+    //
+    // A mouse: buttons, drags and hover are reported as the remote asked; the wheel scrolls as
+    // above; a right click pastes when the remote does not want the mouse.
+
+    /** Called when pinching changed the text size, to remember it. */
+    var onFontSizeChanged: ((Float) -> Unit)? = null
+
+    /** Called for a paste request from the view (right click, Ctrl+Shift+V). */
+    var onPasteRequest: (() -> Unit)? = null
+
+    private var scaling = false
+    private var mouseButton: MouseEncoder.Button? = null
+    private var lastMouseCell: Pair<Int, Int>? = null
+
+    private fun modes() = session?.let { synchronized(it.screen) { it.screen.modes } }
+
+    private fun mouseMode() = modes()?.mouse ?: MouseMode.MOUSE_MODE_NONE
+
+    private fun cellAt(x: Float, y: Float): Pair<Int, Int> {
+        val s = session
+        val (cols, rows) =
+            if (s != null) synchronized(s.screen) { s.screen.cols to s.screen.rows } else 1 to 1
+        return (x / cellW).toInt().coerceIn(0, max(0, cols - 1)) to
+            (y / cellH).toInt().coerceIn(0, max(0, rows - 1))
+    }
+
+    private fun report(
+        button: MouseEncoder.Button,
+        kind: MouseEncoder.Kind,
+        x: Float,
+        y: Float,
+        mods: Mods = Mods(),
+    ) {
+        val (c, r) = cellAt(x, y)
+        val sgr = modes()?.mouseSgr ?: false
+        MouseEncoder.encode(button, kind, c, r, sgr, mods)?.let(::send)
+    }
+
+    /** Scrolls [lines] (positive: towards older content) at [x], [y]. */
+    private fun scrollLines(lines: Int, x: Float, y: Float) {
+        if (lines == 0) return
+        val n = lines.coerceIn(-50, 50)
+        val m = modes()
+        when {
+            m != null && m.mouse != MouseMode.MOUSE_MODE_NONE -> {
+                val b = if (n > 0) MouseEncoder.Button.WHEEL_UP else MouseEncoder.Button.WHEEL_DOWN
+                repeat(kotlin.math.abs(n)) { report(b, MouseEncoder.Kind.PRESS, x, y) }
+            }
+            m != null && m.altScreen -> {
+                val key = if (n > 0) Key.UP else Key.DOWN
+                repeat(kotlin.math.abs(n)) { send(KeyEncoder.key(key, Mods(), m.appCursor)) }
+            }
+            else -> session?.scroll(n)
+        }
+    }
+
+    private val scaleDetector =
+        ScaleGestureDetector(
+            context,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                private var start = 0f
+
+                override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                    scaling = true
+                    start = fontSizeSp
+                    return true
+                }
+
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    val target = (fontSizeSp * detector.scaleFactor).coerceIn(7f, 32f)
+                    // Half-point steps, so the grid does not churn on every frame of a pinch.
+                    if (kotlin.math.abs(target - fontSizeSp) >= 0.5f) {
+                        fontSizeSp = Math.round(target * 2) / 2f
+                        return true
+                    }
+                    return false
+                }
+
+                override fun onScaleEnd(detector: ScaleGestureDetector) {
+                    if (fontSizeSp != start) onFontSizeChanged?.invoke(fontSizeSp)
+                }
+            },
+        )
 
     private val gestures =
         GestureDetector(
@@ -206,8 +297,24 @@ class TerminalView(context: Context) : View(context) {
                 override fun onDown(e: MotionEvent) = true
 
                 override fun onSingleTapUp(e: MotionEvent): Boolean {
-                    showKeyboard()
+                    if (scaling) return true
+                    if (mouseMode() != MouseMode.MOUSE_MODE_NONE) {
+                        val (c, r) = cellAt(e.x, e.y)
+                        MouseEncoder.click(
+                                MouseEncoder.Button.LEFT,
+                                c,
+                                r,
+                                modes()?.mouseSgr ?: false,
+                            )
+                            ?.let(::send)
+                    } else {
+                        showKeyboard()
+                    }
                     return true
+                }
+
+                override fun onLongPress(e: MotionEvent) {
+                    if (!scaling) showKeyboard()
                 }
 
                 override fun onScroll(
@@ -216,12 +323,13 @@ class TerminalView(context: Context) : View(context) {
                     dx: Float,
                     dy: Float,
                 ): Boolean {
+                    if (scaling || e2.pointerCount > 1) return true
                     scrollRemainder += dy
                     val lines = (scrollRemainder / cellH).toInt()
                     if (lines != 0) {
                         scrollRemainder -= lines * cellH
                         // Dragging down (dy < 0) reveals older lines.
-                        session?.scroll(-lines)
+                        scrollLines(-lines, e2.x, e2.y)
                     }
                     return true
                 }
@@ -229,8 +337,93 @@ class TerminalView(context: Context) : View(context) {
         )
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) scrollRemainder = 0f
-        return gestures.onTouchEvent(event) || super.onTouchEvent(event)
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return onMouse(event)
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            scrollRemainder = 0f
+            scaling = false
+        }
+        scaleDetector.onTouchEvent(event)
+        val handled = gestures.onTouchEvent(event)
+        if (
+            event.actionMasked == MotionEvent.ACTION_UP ||
+                event.actionMasked == MotionEvent.ACTION_CANCEL
+        ) {
+            scaling = false
+        }
+        return handled || super.onTouchEvent(event)
+    }
+
+    private fun buttonOf(state: Int): MouseEncoder.Button? =
+        when {
+            state and MotionEvent.BUTTON_PRIMARY != 0 -> MouseEncoder.Button.LEFT
+            state and MotionEvent.BUTTON_TERTIARY != 0 -> MouseEncoder.Button.MIDDLE
+            state and MotionEvent.BUTTON_SECONDARY != 0 -> MouseEncoder.Button.RIGHT
+            else -> null
+        }
+
+    private fun mouseMods(e: MotionEvent) =
+        Mods(
+            ctrl = e.metaState and KeyEvent.META_CTRL_ON != 0,
+            alt = e.metaState and KeyEvent.META_ALT_ON != 0,
+            shift = e.metaState and KeyEvent.META_SHIFT_ON != 0,
+        )
+
+    /** A mouse's buttons and drags. */
+    private fun onMouse(e: MotionEvent): Boolean {
+        val mode = mouseMode()
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                requestFocus()
+                val b = buttonOf(e.buttonState) ?: MouseEncoder.Button.LEFT
+                if (mode == MouseMode.MOUSE_MODE_NONE) {
+                    if (b != MouseEncoder.Button.LEFT) onPasteRequest?.invoke()
+                    return true
+                }
+                mouseButton = b
+                lastMouseCell = cellAt(e.x, e.y)
+                report(b, MouseEncoder.Kind.PRESS, e.x, e.y, mouseMods(e))
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val b = mouseButton ?: return true
+                if (mode != MouseMode.MOUSE_MODE_DRAG && mode != MouseMode.MOUSE_MODE_MOTION)
+                    return true
+                val cell = cellAt(e.x, e.y)
+                if (cell == lastMouseCell) return true
+                lastMouseCell = cell
+                report(b, MouseEncoder.Kind.MOTION, e.x, e.y, mouseMods(e))
+            }
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL -> {
+                val b = mouseButton ?: return true
+                mouseButton = null
+                if (mode != MouseMode.MOUSE_MODE_NONE)
+                    report(b, MouseEncoder.Kind.RELEASE, e.x, e.y, mouseMods(e))
+            }
+        }
+        return true
+    }
+
+    /** The wheel, and hover motion when the remote asked for all motion. */
+    override fun onGenericMotionEvent(e: MotionEvent): Boolean {
+        if (!e.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) return super.onGenericMotionEvent(e)
+        when (e.actionMasked) {
+            MotionEvent.ACTION_SCROLL -> {
+                val v = e.getAxisValue(MotionEvent.AXIS_VSCROLL)
+                // One notch is three lines, as on most desktops.
+                val lines = Math.round(v * 3)
+                scrollLines(lines, e.x, e.y)
+                return true
+            }
+            MotionEvent.ACTION_HOVER_MOVE -> {
+                if (mouseMode() != MouseMode.MOUSE_MODE_MOTION) return false
+                val cell = cellAt(e.x, e.y)
+                if (cell == lastMouseCell) return true
+                lastMouseCell = cell
+                report(MouseEncoder.Button.NONE, MouseEncoder.Kind.MOTION, e.x, e.y, mouseMods(e))
+                return true
+            }
+        }
+        return super.onGenericMotionEvent(e)
     }
 
     fun showKeyboard() {
@@ -353,6 +546,11 @@ class TerminalView(context: Context) : View(context) {
                     appCursor,
                 )
             )
+            return true
+        }
+        // Ctrl+Shift+V pastes, as in desktop terminals.
+        if (keyCode == KeyEvent.KEYCODE_V && event.isCtrlPressed && event.isShiftPressed) {
+            onPasteRequest?.invoke()
             return true
         }
         // Printable keys from a hardware keyboard.

@@ -186,6 +186,10 @@ class SessionRegistry(
                 byId[msg.authPrompt.sessionId]?.onPrompt(Prompt.Auth(msg.authPrompt))
             EngineMsg.BodyCase.FRAME -> byId[msg.frame.sessionId]?.onFrame(msg.frame)
             EngineMsg.BodyCase.BELL -> byId[msg.bell.sessionId]?.onBell()
+            EngineMsg.BodyCase.CLIPBOARD_WRITE ->
+                byId[msg.clipboardWrite.sessionId]?.onClipboard(
+                    ClipboardOffer(msg.clipboardWrite.text, msg.clipboardWrite.primary)
+                )
             else -> {}
         }
     }
@@ -194,6 +198,12 @@ class SessionRegistry(
         scope.launch(block = block)
     }
 }
+
+/**
+ * Text a remote offered for the clipboard (OSC 52). Remote-controlled: whether it reaches the
+ * clipboard is the frontend's decision, and it must be shown as plain text.
+ */
+data class ClipboardOffer(val text: String, val primary: Boolean)
 
 /** Something the engine needs a human to decide. */
 sealed interface Prompt {
@@ -220,6 +230,7 @@ internal constructor(
     private val _prompt = MutableStateFlow<Prompt?>(null)
     private val _screenVersion = MutableStateFlow(0L)
     private val _bell = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val _clipboard = MutableSharedFlow<ClipboardOffer>(extraBufferCapacity = 4)
 
     val status: StateFlow<SessionStatus> = _status
 
@@ -233,6 +244,9 @@ internal constructor(
     val screenVersion: StateFlow<Long> = _screenVersion
 
     val bell: SharedFlow<Unit> = _bell
+
+    /** Clipboard offers from the remote; extra ones are dropped while the UI is not collecting. */
+    val clipboard: SharedFlow<ClipboardOffer> = _clipboard
 
     fun input(bytes: ByteArray) {
         if (bytes.isEmpty() || _status.value.closed) return
@@ -376,6 +390,11 @@ internal constructor(
             ClientMsg.newBuilder()
                 .setFrameAck(FrameAck.newBuilder().setSessionId(id).setSeq(frame.seq))
         )
+    }
+
+    internal fun onClipboard(offer: ClipboardOffer) {
+        registry.log.info("session", "clipboard offer of ${offer.text.length} chars", id)
+        _clipboard.tryEmit(offer)
     }
 
     internal fun onBell() {

@@ -8,6 +8,7 @@ import io.github.franticplant.veil.engine.SessionRegistry
 import io.github.franticplant.veil.frontend.BuildInfo
 import io.github.franticplant.veil.frontend.EngineHost
 import io.github.franticplant.veil.frontend.Profiles
+import io.github.franticplant.veil.frontend.UiPrefs
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +46,8 @@ class VeilApplication : Application(), EngineHost {
     override val sessions: SessionRegistry by lazy { SessionRegistry(backend, appScope, log) }
 
     override val profiles: Profiles by lazy { Profiles(this) }
+
+    override val uiPrefs: UiPrefs by lazy { UiPrefs(this) }
 
     /** For work that must outlive any screen (dev API calls included). */
     val scope: CoroutineScope

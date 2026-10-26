@@ -12,6 +12,8 @@ interface EngineHost {
     val sessions: SessionRegistry
     /** Saved hosts, shared by every screen (and, in dev builds, the dev API). */
     val profiles: Profiles
+    /** Terminal screen preferences, shared by every screen. */
+    val uiPrefs: UiPrefs
     val buildInfo: BuildInfo
     /** Where sessions run, for display ("local", later "vm"). */
     val backendKind: String

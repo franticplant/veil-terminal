@@ -214,6 +214,20 @@ async fn run_inner(
                                 SessionStats::add(&prompter.stats.bytes_to_remote, bytes.len() as u64);
                                 channel.data_bytes(bytes).await.map_err(err("send failed"))?;
                             }
+                            TermEvent::Clipboard { text, primary } => {
+                                prompter.log(
+                                    v1::LogLevel::Info,
+                                    "session",
+                                    &format!("remote offered {} bytes for the clipboard", text.len()),
+                                );
+                                prompter
+                                    .event(v1::engine_msg::Body::ClipboardWrite(v1::ClipboardWrite {
+                                        session_id: prompter.session_id,
+                                        text,
+                                        primary,
+                                    }))
+                                    .await;
+                            }
                             TermEvent::Bell => {
                                 prompter
                                     .event(v1::engine_msg::Body::Bell(v1::Bell {

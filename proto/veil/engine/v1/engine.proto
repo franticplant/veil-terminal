@@ -62,6 +62,7 @@ message EngineMsg {
     AuthPrompt auth_prompt = 22;
     Frame frame = 23;
     Bell bell = 24;
+    ClipboardWrite clipboard_write = 25;
   }
 }
 
@@ -372,6 +373,17 @@ message Modes {
 
 message Bell {
   uint64 session_id = 1;
+}
+
+// The remote asked (OSC 52) to put text on the clipboard. The frontend
+// decides whether to: it may ask the user, allow, or ignore it. A remote can
+// never read the clipboard; such requests stop in the engine.
+message ClipboardWrite {
+  uint64 session_id = 1;
+  // At most 1 MiB of UTF-8. Remote-controlled: show it as text only.
+  string text = 2;
+  // The X11 primary selection rather than the clipboard.
+  bool primary = 3;
 }
 
 // ---- Diagnostics ---------------------------------------------------------
