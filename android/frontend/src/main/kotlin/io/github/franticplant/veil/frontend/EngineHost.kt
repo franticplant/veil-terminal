@@ -10,6 +10,8 @@ import io.github.franticplant.veil.engine.SessionRegistry
 interface EngineHost {
     /** The app's sessions; they outlive any screen. */
     val sessions: SessionRegistry
+    /** Saved hosts, shared by every screen (and, in dev builds, the dev API). */
+    val profiles: Profiles
     val buildInfo: BuildInfo
     /** Where sessions run, for display ("local", later "vm"). */
     val backendKind: String

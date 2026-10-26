@@ -60,6 +60,14 @@ class ScreenModelTest {
                 row(0, run(0, "漢字", cells = 4, flags = wide), run(4, "é", cells = 1)),
             )
         )
+        assertEquals(listOf("漢字e\u0301", "", ""), m.text())
+    }
+
+    @Test
+    fun textPlacesRunsAtTheirColumns() {
+        val m = ScreenModel()
+        m.apply(frame(1, true, row(0, run(0, "$"), run(2, "ls")), row(2, run(7, "end"))))
+        assertEquals(listOf("$ ls", "", "       end"), m.text())
     }
 
     @Test

@@ -1,0 +1,32 @@
+plugins {
+    alias(libs.plugins.android.library)
+}
+
+// The development control API's shared definitions: method specs, parameter
+// checking, and the Binder interface (IDevHooks) between the dev agent
+// (:devd) and the Veil app's dev flavor. Only dev builds depend on this
+// module; its package is io.github.franticplant.veil.dev, which
+// scripts/check-release-apk.sh requires to be absent from prod APKs.
+android {
+    namespace = 'io.github.franticplant.veil.dev.api'
+    compileSdk = 37
+
+    defaultConfig {
+        minSdk = 34
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        aidl = true
+    }
+}
+
+dependencies {
+    // org.json is part of Android; unit tests on the JVM need the real one.
+    testImplementation libs.junit
+    testImplementation libs.json
+}

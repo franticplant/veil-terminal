@@ -76,7 +76,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         val host = application as EngineHost
-        val profiles = Profiles(this)
+        val profiles = host.profiles
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(Modifier.fillMaxSize(), color = Color(Palette.DEFAULT_BG)) {

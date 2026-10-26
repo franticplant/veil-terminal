@@ -3,9 +3,11 @@ package io.github.franticplant.veil
 import android.app.Application
 import io.github.franticplant.veil.engine.EngineBackend
 import io.github.franticplant.veil.engine.LocalBackend
+import io.github.franticplant.veil.engine.LogRing
 import io.github.franticplant.veil.engine.SessionRegistry
 import io.github.franticplant.veil.frontend.BuildInfo
 import io.github.franticplant.veil.frontend.EngineHost
+import io.github.franticplant.veil.frontend.Profiles
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,10 +36,26 @@ class VeilApplication : Application(), EngineHost {
     override val backendKind: String
         get() = backend.kind
 
-    override val sessions: SessionRegistry by lazy { SessionRegistry(backend, appScope) }
+    /** The app-side log, shared by the session layer and (in dev builds) the dev API. */
+    val log = LogRing()
+
+    /** When this process started, for uptime. */
+    val startedAtMs = System.currentTimeMillis()
+
+    override val sessions: SessionRegistry by lazy { SessionRegistry(backend, appScope, log) }
+
+    override val profiles: Profiles by lazy { Profiles(this) }
+
+    /** For work that must outlive any screen (dev API calls included). */
+    val scope: CoroutineScope
+        get() = appScope
 
     override fun onCreate() {
         super.onCreate()
+        log.info(
+            "app",
+            "process started: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+        )
         // Keep the process in the foreground while any session is live.
         appScope.launch { SessionService.follow(this@VeilApplication, sessions) }
     }

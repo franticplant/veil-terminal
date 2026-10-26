@@ -1,0 +1,20 @@
+[package]
+name = "veil-ctl"
+description = "Laptop CLI for the Veil dev agent (devd): pairing, typed calls, logs, updates, scenarios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+# TLS 1.3 with ring (as everywhere else in the workspace), no aws-lc.
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+ring = "0.17.14"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+base64 = "0.22.1"
+
+[lints]
+workspace = true

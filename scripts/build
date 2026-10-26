@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Builds unsigned Veil APKs in the build container.
 #
-#   scripts/build [dev|prod|all] [-- extra gradle args]
+#   scripts/build [dev|prod|devd|all] [-- extra gradle args]
 #
-# Output: android/app/build/outputs/apk/<flavor>/release/app-<flavor>-release-unsigned.apk
+# Output: android/app/build/outputs/apk/<flavor>/release/app-<flavor>-release-unsigned.apk,
+# and for devd (the dev agent package) android/devd/build/outputs/apk/release/devd-release-unsigned.apk
 # Then: scripts/sign dev   (signs into dist/)
 #
 # The version comes from git, here on the host: versionCode is the commit time
@@ -20,8 +21,9 @@ shift || true
 case $flavor in
 dev) tasks=(:app:assembleDevRelease) ;;
 prod) tasks=(:app:assembleProdRelease) ;;
-all) tasks=(:app:assembleDevRelease :app:assembleProdRelease) ;;
-*) echo "usage: $0 [dev|prod|all] [-- gradle args]" >&2; exit 2 ;;
+devd) tasks=(:devd:assembleRelease) ;;
+all) tasks=(:app:assembleDevRelease :app:assembleProdRelease :devd:assembleRelease) ;;
+*) echo "usage: $0 [dev|prod|devd|all] [-- gradle args]" >&2; exit 2 ;;
 esac
 
 base=0.0.1

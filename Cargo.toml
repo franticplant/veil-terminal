@@ -5,6 +5,7 @@ members = [
     "core/term",
     "core/engine",
     "android/jni",
+    "dev/ctl",
 ]
 
 [workspace.package]

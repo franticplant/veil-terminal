@@ -68,6 +68,36 @@ class ScreenModel {
         seq = frame.seq
     }
 
+    /**
+     * The screen as plain text, one string per row, trailing blanks trimmed. A wide character
+     * occupies its first cell; its second cell adds nothing.
+     */
+    fun text(): List<String> = lines.map { row ->
+        if (row == null) return@map ""
+        val cells = arrayOfNulls<String>(cols)
+        for (run in row.runsList) {
+            val wide = run.flags and RunFlag.RUN_FLAG_WIDE_VALUE != 0
+            val perCell = if (wide) 2 else 1
+            val scalars = run.text.codePointCount(0, run.text.length)
+            if (scalars * perCell == run.cells) {
+                var i = 0
+                var col = run.col
+                while (i < run.text.length) {
+                    val cp = run.text.codePointAt(i)
+                    cells[col] = String(Character.toChars(cp))
+                    if (wide && col + 1 < cols) cells[col + 1] = ""
+                    i += Character.charCount(cp)
+                    col += perCell
+                }
+            } else {
+                // One grapheme cluster.
+                cells[run.col] = run.text
+                if (wide && run.col + 1 < cols) cells[run.col + 1] = ""
+            }
+        }
+        buildString { for (c in cells) append(c ?: " ") }.trimEnd()
+    }
+
     private fun validate(frame: Frame) {
         fun bad(msg: String): Nothing = throw InvalidFrameException(msg)
 

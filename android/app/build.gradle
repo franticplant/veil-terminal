@@ -87,4 +87,7 @@ androidComponents {
 dependencies {
     implementation project(':engine-client')
     implementation project(':frontend')
+
+    // The dev control API, for src/dev only.
+    devImplementation project(':devapi')
 }

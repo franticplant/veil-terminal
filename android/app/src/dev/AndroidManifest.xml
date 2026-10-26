@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The dev flavor's overlay: the DevHooks service the dev agent (devd) binds to.
+  A prod APK has neither the permission nor the service, and
+  scripts/check-release-apk.sh verifies that.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Signature-level: only packages signed with the Veil key (devd) can hold
+      it. devd declares the same permission, so it exists whichever of the two
+      is installed first.
+    -->
+    <permission
+        android:name="io.github.franticplant.veil.permission.DEV_HOOKS"
+        android:label="Control Veil for development"
+        android:protectionLevel="signature" />
+
+    <application>
+        <service
+            android:name=".dev.DevHooksService"
+            android:exported="true"
+            android:permission="io.github.franticplant.veil.permission.DEV_HOOKS" />
+    </application>
+</manifest>

@@ -11,9 +11,11 @@
 # Per APK:
 #   both ways    BuildConfig.DEV_TOOLS (kept by proguard-rules.pro) and the
 #                "-dev" versionName suffix
-#   prod only    no class under io.github.franticplant.veil.dev (the dev source
-#                set; in a prod build it must be absent, not just unreachable),
-#                and none of the dev-only permissions below
+#                classes under io.github.franticplant.veil.dev (the dev source
+#                set and the dev API; in a prod build they must be absent, not
+#                just unreachable), and the DevHooks service and its DEV_HOOKS
+#                permission in the manifest
+#   prod only    none of the dev-only permissions below
 #   always       not debuggable; libveil_jni.so packaged for arm64-v8a; if the
 #                APK is signed, the signer is the pinned Veil certificate
 #
@@ -76,12 +78,15 @@ for apk in "$@"; do
 		found "BuildConfig.DEV_TOOLS=true" "$([[ $value == true ]] && echo yes || echo no)"
 	fi
 
+	found "classes from the dev source set (io.github.franticplant.veil.dev)" \
+		"$(yesno grep -qE "Class descriptor *: 'Lio/github/franticplant/veil/dev/" "$dump")"
+
+	manifest=$(aapt2 dump xmltree --file AndroidManifest.xml "$apk")
+	found "DevHooks service" "$(yesno grep -q 'io.github.franticplant.veil.dev.DevHooksService' <<< "$manifest")"
+	found "DEV_HOOKS permission" \
+		"$(yesno grep -q 'io.github.franticplant.veil.permission.DEV_HOOKS' <<< "$manifest")"
+
 	if ! $expect_dev; then
-		if grep -qE "Class descriptor *: 'Lio/github/franticplant/veil/dev/" "$dump"; then
-			bad "classes from the dev source set (io.github.franticplant.veil.dev) are present"
-		else
-			ok "no classes from the dev source set"
-		fi
 		for p in "${dev_permissions[@]}"; do
 			if grep -q "uses-permission: name='$p'" <<< "$badging"; then bad "$p is requested"; else ok "no $p"; fi
 		done

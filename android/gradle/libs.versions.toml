@@ -13,6 +13,7 @@ coreKtx = "1.19.1"
 lifecycle = "2.11.0"
 junit = "4.13.2"
 ktfmt = "0.64"
+json = "20250517"
 
 [libraries]
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
@@ -27,6 +28,7 @@ protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.
 protobuf-protoc = { module = "com.google.protobuf:protoc", version.ref = "protobuf" }
 junit = { module = "junit:junit", version.ref = "junit" }
 ktfmt = { module = "com.facebook:ktfmt", version.ref = "ktfmt" }
+json = { module = "org.json:json", version.ref = "json" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

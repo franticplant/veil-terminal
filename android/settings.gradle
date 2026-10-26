@@ -23,3 +23,7 @@ include ':engine-client'
 include ':frontend'
 // The installable package: Application, flavors (dev/prod), packaging.
 include ':app'
+// Development control plane, never part of a prod APK: the shared API
+// definitions and the dev agent package (io.github.franticplant.veil.devd).
+include ':devapi'
+include ':devd'

@@ -6,11 +6,19 @@ import io.github.franticplant.veil.engine.proto.AuthPrompt
 import io.github.franticplant.veil.engine.proto.ClientMsg
 import io.github.franticplant.veil.engine.proto.CloseSession
 import io.github.franticplant.veil.engine.proto.EngineMsg
+import io.github.franticplant.veil.engine.proto.EngineStats
+import io.github.franticplant.veil.engine.proto.ForgetHostKey
 import io.github.franticplant.veil.engine.proto.FrameAck
+import io.github.franticplant.veil.engine.proto.GetLogs
+import io.github.franticplant.veil.engine.proto.GetStats
 import io.github.franticplant.veil.engine.proto.HostKeyAnswer
 import io.github.franticplant.veil.engine.proto.HostKeyDecision
+import io.github.franticplant.veil.engine.proto.HostKeyEntry
 import io.github.franticplant.veil.engine.proto.HostKeyPrompt
 import io.github.franticplant.veil.engine.proto.Input
+import io.github.franticplant.veil.engine.proto.ListHostKeys
+import io.github.franticplant.veil.engine.proto.LogBatch
+import io.github.franticplant.veil.engine.proto.LogLevel
 import io.github.franticplant.veil.engine.proto.OpenSession
 import io.github.franticplant.veil.engine.proto.RequestSnapshot
 import io.github.franticplant.veil.engine.proto.Resize
@@ -41,7 +49,11 @@ data class Target(val host: String, val port: Int, val username: String, val lab
  * engine connection's event stream, routes events to their [Session], and acknowledges frames once
  * they are in the session's [ScreenModel].
  */
-class SessionRegistry(private val backend: EngineBackend, private val scope: CoroutineScope) {
+class SessionRegistry(
+    private val backend: EngineBackend,
+    private val scope: CoroutineScope,
+    internal val log: LogRing = LogRing(),
+) {
     private val connectLock = Mutex()
     @Volatile private var conn: EngineConnection? = null
     private val byId = ConcurrentHashMap<Long, Session>()
@@ -55,10 +67,16 @@ class SessionRegistry(private val backend: EngineBackend, private val scope: Cor
         conn?.takeIf { it.state.value == EngineConnection.State.Open }
             ?: backend.connect("veil-frontend", scope).also { c ->
                 conn = c
+                log.info(
+                    "engine",
+                    "connected to the ${backend.kind} engine ${c.hello.engineVersion}, " +
+                        "protocol ${c.hello.protocolVersion}",
+                )
                 scope.launch { c.events.collect { dispatch(it) } }
                 scope.launch {
                     c.state.collect { s ->
                         if (s is EngineConnection.State.Closed) {
+                            log.warn("engine", "connection closed: ${s.reason}")
                             byId.values.forEach {
                                 it.engineGone("engine connection lost: ${s.reason}")
                             }
@@ -67,6 +85,64 @@ class SessionRegistry(private val backend: EngineBackend, private val scope: Cor
                 }
             }
     }
+
+    /** The current connection if one is open; never opens one. */
+    val currentConnection: EngineConnection?
+        get() = conn?.takeIf { it.state.value == EngineConnection.State.Open }
+
+    /** Where the engine runs ("local", later "vm"). */
+    val backendKind: String
+        get() = backend.kind
+
+    /**
+     * Closes the engine connection. Every session on it ends; the next use opens a new one. With
+     * the local backend this stops the engine and starts a fresh one.
+     */
+    suspend fun restartEngine(reason: String) {
+        connectLock.withLock {
+            val c = conn ?: return
+            log.warn("engine", "restarting the engine: $reason")
+            conn = null
+            c.close()
+        }
+    }
+
+    suspend fun engineStats(): EngineStats =
+        connection()
+            .request(ClientMsg.newBuilder().setGetStats(GetStats.getDefaultInstance()))
+            .expect(EngineMsg.BodyCase.ENGINE_STATS)
+            .engineStats
+
+    suspend fun engineLogs(afterSeq: Long, max: Int, minLevel: LogLevel): LogBatch =
+        connection()
+            .request(
+                ClientMsg.newBuilder()
+                    .setGetLogs(
+                        GetLogs.newBuilder().setAfterSeq(afterSeq).setMax(max).setMinLevel(minLevel)
+                    )
+            )
+            .expect(EngineMsg.BodyCase.LOG_BATCH)
+            .logBatch
+
+    suspend fun hostKeys(): List<HostKeyEntry> =
+        connection()
+            .request(ClientMsg.newBuilder().setListHostKeys(ListHostKeys.getDefaultInstance()))
+            .expect(EngineMsg.BodyCase.HOST_KEY_LIST)
+            .hostKeyList
+            .entriesList
+
+    suspend fun forgetHostKey(host: String, port: Int) {
+        connection()
+            .request(
+                ClientMsg.newBuilder()
+                    .setForgetHostKey(ForgetHostKey.newBuilder().setHost(host).setPort(port))
+            )
+            .expect(EngineMsg.BodyCase.ACK)
+        log.info("hostkeys", "forgot the key of $host:$port")
+    }
+
+    /** The session with [id], if this registry knows it. */
+    fun get(id: Long): Session? = byId[id]
 
     /** Opens a session to [target] with a [cols] x [rows] terminal. */
     suspend fun open(target: Target, cols: Int, rows: Int): Session {
@@ -83,6 +159,7 @@ class SessionRegistry(private val backend: EngineBackend, private val scope: Cor
                     )
             )
         val id = reply.expect(EngineMsg.BodyCase.SESSION_OPENED).sessionOpened.sessionId
+        log.info("session", "opened ${target.displayName} (${cols}x$rows)", id)
         val session = Session(id, target, c, this)
         byId[id] = session
         _sessions.value = _sessions.value + session
@@ -237,11 +314,20 @@ internal constructor(
     }
 
     internal fun onState(phase: SessionPhase, detail: String) {
+        val name = phase.name.removePrefix("SESSION_PHASE_")
+        registry.log.info("session", if (detail.isEmpty()) name else "$name: $detail", id)
         _status.value = SessionStatus(phase, detail)
         if (phase == SessionPhase.SESSION_PHASE_CLOSED) _prompt.value = null
     }
 
     internal fun onPrompt(p: Prompt) {
+        val what =
+            when (p) {
+                is Prompt.HostKey ->
+                    "host key prompt (${p.prompt.algorithm} ${p.prompt.fingerprint})"
+                is Prompt.Auth -> "auth prompt (${p.prompt.kind}, ${p.prompt.fieldsCount} field(s))"
+            }
+        registry.log.info("session", what, id)
         _prompt.value = p
     }
 
@@ -251,6 +337,7 @@ internal constructor(
         } catch (e: InvalidFrameException) {
             // The engine broke the render contract. Treat it as hostile: stop
             // listening to this session.
+            registry.log.log(LogRing.Level.ERROR, "render", "invalid frame: ${e.message}", id)
             onState(SessionPhase.SESSION_PHASE_CLOSED, "engine sent an invalid frame: ${e.message}")
             send(ClientMsg.newBuilder().setCloseSession(CloseSession.newBuilder().setSessionId(id)))
             return
