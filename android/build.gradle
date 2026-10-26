@@ -1,0 +1,40 @@
+// AGP 9 compiles Kotlin itself (built-in Kotlin). The kotlin-android plugin is
+// declared only to pin the Kotlin Gradle plugin version on the classpath; it
+// is never applied.
+plugins {
+    alias(libs.plugins.android.application) apply false
+    alias(libs.plugins.android.library) apply false
+    alias(libs.plugins.kotlin.android) apply false
+    alias(libs.plugins.kotlin.compose) apply false
+    alias(libs.plugins.protobuf) apply false
+}
+
+// ktfmtCheck / ktfmtFormat over every module's Kotlin sources, with the
+// formatter pinned in the version catalog.
+configurations {
+    ktfmtCli
+}
+
+dependencies {
+    ktfmtCli libs.ktfmt
+}
+
+def ktfmtTask(String name, String description, List<String> flags) {
+    tasks.register(name, JavaExec) {
+        group = 'formatting'
+        setDescription(description)
+        classpath = configurations.ktfmtCli
+        mainClass = 'com.facebook.ktfmt.cli.Main'
+        def sources = fileTree(rootDir) {
+            include '*/src/**/*.kt'
+            exclude '**/build/**'
+        }
+        inputs.files(sources)
+        def paths = sources.files.collect { it.path }.sort()
+        args(['--kotlinlang-style'] + flags + paths)
+    }
+}
+
+ktfmtTask('ktfmtCheck', 'Fails if any Kotlin source is not ktfmt-formatted.',
+        ['--dry-run', '--set-exit-if-changed'])
+ktfmtTask('ktfmtFormat', 'Formats all Kotlin sources with ktfmt.', [])

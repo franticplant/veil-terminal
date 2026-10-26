@@ -1,0 +1,23 @@
+[package]
+name = "veil-engine"
+description = "The Veil engine: sessions, SSH and terminal state behind the engine protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+veil-protocol.workspace = true
+veil-term.workspace = true
+russh.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "net", "macros"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+rand = { version = "0.10", features = ["thread_rng"] }
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Signs a built APK with the Veil key.
+#
+#   scripts/sign dev|prod
+#       Signs android/app/build/outputs/apk/<flavor>/release/...-unsigned.apk in
+#       a network-less container. Needs VEIL_KEYSTORE (path to the PKCS12
+#       keystore, alias "veil") and VEIL_KEYSTORE_PASSWORD in the environment;
+#       CI sets both from the "release" environment's secrets.
+#
+#   scripts/sign --finish dev|prod DIR [VIA]
+#       For signing set-ups outside this repo: DIR holds the output of
+#       scripts/lib/sign-apk.sh (signed.apk, .idsig, .certs, .badging); this
+#       does the remaining steps. VIA is recorded in the log.
+#
+# Then: checks the signer against the pinned digest in
+# dev/signing/veil-release-cert.sha256, writes dist/veil-<versionName>.apk
+# (+ .idsig, the v4 signature that incremental installs and Microdroid use),
+# appends a line to ~/.local/state/veil/signing.log, and runs
+# scripts/check-release-apk.sh.
+set -euo pipefail
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+
+usage() {
+	echo "usage: $0 dev|prod | --finish dev|prod DIR [VIA]" >&2
+	exit 2
+}
+
+finish() {
+	local flavor=$1 dir=$2 via=$3
+	local want got version out sha log check=()
+	want=$(tr -d '[:space:]' < "$repo/dev/signing/veil-release-cert.sha256")
+	got=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$dir/signed.apk.certs")
+	if [[ $got != "$want" ]]; then
+		echo "signer digest $got does not match the pinned $want" >&2
+		exit 1
+	fi
+	version=$(sed -n "s/.* versionName='\([^']*\)'.*/\1/p" "$dir/signed.apk.badging")
+	mkdir -p "$repo/dist"
+	out=$repo/dist/veil-$version.apk
+	mv "$dir/signed.apk" "$out"
+	mv "$dir/signed.apk.idsig" "$out.idsig"
+	sha=$(sha256sum "$out" | cut -d' ' -f1)
+
+	log=${XDG_STATE_HOME:-$HOME/.local/state}/veil/signing.log
+	mkdir -p "$(dirname "$log")"
+	printf '%s via=%s apk=%s sha256=%s signer=%s\n' \
+		"$(date -Is)" "$via" "$(basename "$out")" "$sha" "$got" >> "$log"
+	echo "signed $out ($via)"
+
+	[[ $flavor == dev ]] && check=(--expect-dev)
+	"$repo/scripts/podman-run" --offline scripts/check-release-apk.sh "${check[@]}" "dist/$(basename "$out")"
+}
+
+if [[ ${1:-} == --finish ]]; then
+	[[ $# -ge 3 ]] || usage
+	[[ $2 == dev || $2 == prod ]] || usage
+	finish "$2" "$3" "${4:-external}"
+	exit 0
+fi
+
+flavor=${1:-}
+[[ $flavor == dev || $flavor == prod ]] || usage
+
+unsigned=$repo/android/app/build/outputs/apk/$flavor/release/app-$flavor-release-unsigned.apk
+[[ -f $unsigned ]] || { echo "no unsigned APK at $unsigned; run scripts/build $flavor first" >&2; exit 1; }
+: "${VEIL_KEYSTORE:?set VEIL_KEYSTORE to the keystore path}"
+: "${VEIL_KEYSTORE_PASSWORD:?set VEIL_KEYSTORE_PASSWORD}"
+[[ -f $VEIL_KEYSTORE ]] || { echo "keystore not found: $VEIL_KEYSTORE" >&2; exit 1; }
+export VEIL_KEYSTORE_PASSWORD
+
+tag=$(sha256sum "$repo/build/Containerfile" | cut -c1-16)
+image=localhost/veil-build:$tag
+podman image exists "$image" || { echo "build image $image missing; run scripts/build first" >&2; exit 1; }
+
+mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}"
+work=$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/veil-sign.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+cp "$unsigned" "$work/in.apk"
+
+# label=disable: the keystore is bind-mounted read-only without relabeling it.
+podman run --rm --network=none --security-opt label=disable --userns=keep-id \
+	-v "$repo/scripts/lib":/src/scripts/lib:ro \
+	-v "$work":/work \
+	-v "$VEIL_KEYSTORE":/signing/veil-release.p12:ro \
+	-e VEIL_KEYSTORE_PASSWORD \
+	"$image" /src/scripts/lib/sign-apk.sh /work/in.apk /work/signed.apk
+
+finish "$flavor" "$work" direct

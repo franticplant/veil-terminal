@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  No permissions yet. INTERNET arrives with SSH, in this package for now and
+  later only in the Network Broker package.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      allowBackup off: host keys, profiles and later credential handles must not
+      leave the device through Android backup.
+    -->
+    <application
+        android:name=".VeilApplication"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:label="@string/app_name"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+</manifest>

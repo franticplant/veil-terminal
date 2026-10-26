@@ -1,0 +1,25 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode = RepositoriesMode.FAIL_ON_PROJECT_REPOS
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'Veil'
+
+// The engine protocol, the backend abstraction and the native engine binding.
+// Knows nothing about UI.
+include ':engine-client'
+// The disposable v0.x UI. Depends only on :engine-client.
+include ':frontend'
+// The installable package: Application, flavors (dev/prod), packaging.
+include ':app'

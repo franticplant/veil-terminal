@@ -1,0 +1,6 @@
+[toolchain]
+# Matches RUST_TOOLCHAIN in build/Containerfile.
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+targets = ["aarch64-linux-android", "x86_64-linux-android"]
+profile = "minimal"

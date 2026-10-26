@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Builds unsigned Veil APKs in the build container.
+#
+#   scripts/build [dev|prod|all] [-- extra gradle args]
+#
+# Output: android/app/build/outputs/apk/<flavor>/release/app-<flavor>-release-unsigned.apk
+# Then: scripts/sign dev   (signs into dist/)
+#
+# The version comes from git, here on the host: versionCode is the commit time
+# in minutes since the epoch times 10, so it never goes backwards and a dev and
+# a prod build of one commit share it; versionName is <base>-g<sha>, plus
+# "-dirty" when the tree has uncommitted changes.
+set -euo pipefail
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+flavor=${1:-dev}
+shift || true
+[[ ${1:-} == -- ]] && shift
+
+case $flavor in
+dev) tasks=(:app:assembleDevRelease) ;;
+prod) tasks=(:app:assembleProdRelease) ;;
+all) tasks=(:app:assembleDevRelease :app:assembleProdRelease) ;;
+*) echo "usage: $0 [dev|prod|all] [-- gradle args]" >&2; exit 2 ;;
+esac
+
+base=0.0.1
+commit_time=$(git -C "$repo" log -1 --format=%ct)
+sha=$(git -C "$repo" rev-parse --short=7 HEAD)
+dirty=$(git -C "$repo" diff --quiet HEAD -- && echo || echo -dirty)
+export VEIL_VERSION_CODE=$((commit_time / 60 * 10))
+export VEIL_VERSION_NAME=$base-g$sha$dirty
+echo "versionCode $VEIL_VERSION_CODE, versionName $VEIL_VERSION_NAME" >&2
+
+exec "$repo/scripts/podman-run" ./android/gradlew -p android --console=plain "${tasks[@]}" "$@"

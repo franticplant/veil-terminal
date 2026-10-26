@@ -1,0 +1,26 @@
+# Restores the build container image from the Actions cache, or builds it from
+# build/Containerfile (and caches it) when the Containerfile changed.
+name: Build image
+description: Load or build localhost/veil-build:<Containerfile hash>
+runs:
+  using: composite
+  steps:
+    - id: tag
+      shell: bash
+      run: echo "tag=$(sha256sum build/Containerfile | cut -c1-16)" >> "$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/veil-build.tar
+        key: veil-build-image-${{ steps.tag.outputs.tag }}
+    - shell: bash
+      env:
+        TAG: ${{ steps.tag.outputs.tag }}
+        HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        if [ "$HIT" = true ]; then
+          podman load -i "$RUNNER_TEMP/veil-build.tar"
+        else
+          podman build -t "localhost/veil-build:$TAG" -f build/Containerfile build
+          podman save -o "$RUNNER_TEMP/veil-build.tar" "localhost/veil-build:$TAG"
+        fi

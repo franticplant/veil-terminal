@@ -1,0 +1,20 @@
+[package]
+name = "veil-jni"
+description = "JNI byte pipe between the Android engine client and the Veil engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "veil_jni"
+crate-type = ["cdylib"]
+
+[dependencies]
+veil-engine.workspace = true
+jni.workspace = true
+
+[lints]
+workspace = true

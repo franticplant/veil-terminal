@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = [
+    "core/protocol",
+    "core/term",
+    "core/engine",
+    "android/jni",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/franticplant/veil-terminal"
+rust-version = "1.99"
+
+[workspace.dependencies]
+veil-protocol = { path = "core/protocol" }
+veil-term = { path = "core/term" }
+veil-engine = { path = "core/engine" }
+
+prost = "0.14.4"
+prost-build = "0.14.4"
+protox = "0.10.0"
+tokio = { version = "1.54.1", default-features = false }
+thiserror = "2.0.21"
+jni = "0.22.4"
+# The terminal state machine only; its default "serde" feature is not needed.
+alacritty_terminal = { version = "0.26.0", default-features = false }
+# ring, not the default aws-lc-rs: ring cross-compiles with the NDK alone.
+russh = { version = "0.65.0", default-features = false, features = ["ring", "rsa"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

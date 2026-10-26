@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Runs a command in a throwaway build container (build/Containerfile).
+#
+#   scripts/podman-run cargo test --workspace
+#   scripts/podman-run --offline ./android/gradlew -p android assembleDevRelease
+#
+# The repository is mounted at /src. Caches persist in named volumes:
+#   veil-cargo   Cargo registry and git checkouts   (/cache/cargo)
+#   veil-target  Cargo target directory              (/cache/target)
+#   veil-gradle  Gradle caches and wrapper dists     (/cache/gradle)
+#   veil-android Android user home (no keys in it)   (/cache/android)
+# Drop them with `podman volume rm veil-cargo veil-target veil-gradle veil-android`.
+#
+# --offline runs the container without a network, for steps that must not
+# fetch anything. Signing never happens here: see scripts/sign.
+#
+# The image tag is a hash of build/Containerfile, so editing the Containerfile
+# builds a new image on the next run and an unchanged one is reused.
+set -euo pipefail
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+network=()
+if [[ ${1:-} == --offline ]]; then
+	network=(--network=none)
+	shift
+fi
+[[ $# -gt 0 ]] || { echo "usage: $0 [--offline] COMMAND..." >&2; exit 2; }
+
+tag=$(sha256sum "$repo/build/Containerfile" | cut -c1-16)
+image=localhost/veil-build:$tag
+if ! podman image exists "$image"; then
+	echo "building $image (build/Containerfile changed or first run)" >&2
+	podman build -t "$image" -f "$repo/build/Containerfile" "$repo/build" >&2
+fi
+
+tty=()
+[[ -t 0 && -t 1 ]] && tty=(-it)
+
+# VEIL_CACHE_DIR=<dir> uses plain directories under <dir> instead of named
+# volumes, so CI can save and restore them with actions/cache.
+caches=()
+for c in cargo target gradle android; do
+	if [[ -n ${VEIL_CACHE_DIR:-} ]]; then
+		mkdir -p "$VEIL_CACHE_DIR/$c"
+		caches+=(-v "$VEIL_CACHE_DIR/$c:/cache/$c:z")
+	else
+		caches+=(-v "veil-$c:/cache/$c:U")
+	fi
+done
+
+exec podman run --rm "${tty[@]}" "${network[@]}" \
+	--userns=keep-id \
+	-v "$repo":/src:z \
+	"${caches[@]}" \
+	-e HOME=/cache/android/home \
+	-e CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}" \
+	-e VEIL_VERSION_CODE -e VEIL_VERSION_NAME \
+	-w /src \
+	"$image" "$@"

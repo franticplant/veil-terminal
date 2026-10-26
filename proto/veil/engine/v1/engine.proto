@@ -1,0 +1,368 @@
+// The engine protocol: everything that crosses between a frontend and the Veil
+// engine. Today the engine runs in the app process and these messages cross a
+// JNI byte pipe; later they cross Binder and vsock unchanged. Nothing here may
+// assume shared memory or object identity.
+//
+// Evolution rules: never reuse or renumber a field; add fields and oneof
+// variants instead. A receiver ignores unknown fields and answers an unknown
+// ClientMsg variant with Error{UNSUPPORTED}. Breaking changes need a new
+// package (veil.engine.v2) and a new protocol_version.
+//
+// Size limits are enforced before decoding (see core/protocol), so no message
+// may be designed to need more than Limits.max_message_bytes.
+
+syntax = "proto3";
+
+package veil.engine.v1;
+
+option java_package = "io.github.franticplant.veil.engine.proto";
+option java_multiple_files = true;
+
+// Frontend -> engine. request_id is chosen by the frontend, non-zero, and
+// echoed on the engine's reply so replies can be matched to requests.
+message ClientMsg {
+  uint64 request_id = 1;
+  oneof body {
+    Hello hello = 10;
+    Ping ping = 11;
+    OpenSession open_session = 12;
+    HostKeyAnswer host_key_answer = 13;
+    AuthAnswer auth_answer = 14;
+    Input input = 15;
+    Resize resize = 16;
+    Scroll scroll = 17;
+    CloseSession close_session = 18;
+    FrameAck frame_ack = 19;
+    RequestSnapshot request_snapshot = 20;
+  }
+}
+
+// Engine -> frontend. request_id is the request this answers, or 0 for an
+// event the engine sends on its own.
+message EngineMsg {
+  uint64 request_id = 1;
+  oneof body {
+    HelloAck hello_ack = 10;
+    Pong pong = 11;
+    Error error = 12;
+    SessionOpened session_opened = 13;
+    // Success reply to a request that returns nothing else.
+    Ack ack = 14;
+
+    // Events (request_id 0).
+    SessionState session_state = 20;
+    HostKeyPrompt host_key_prompt = 21;
+    AuthPrompt auth_prompt = 22;
+    Frame frame = 23;
+    Bell bell = 24;
+  }
+}
+
+// First message on a connection. Anything else before it is refused.
+message Hello {
+  // The highest protocol version the frontend speaks.
+  uint32 protocol_version = 1;
+  // For logs and diagnostics only; not an identity.
+  string client_name = 2;
+}
+
+message HelloAck {
+  // The version both sides will use: min(frontend's, engine's).
+  uint32 protocol_version = 1;
+  // The engine build, e.g. "0.0.1 (abc1234)".
+  string engine_version = 2;
+  Limits limits = 3;
+}
+
+// Bounds the engine enforces on this connection. The frontend must stay within
+// them; the engine refuses messages that do not.
+message Limits {
+  uint32 max_message_bytes = 1;
+  // How many requests may be outstanding before the engine stops reading.
+  uint32 max_in_flight = 2;
+  // Unacknowledged frames per session before the engine waits for FrameAck.
+  uint32 max_frames_in_flight = 3;
+  uint32 max_sessions = 4;
+  uint32 max_input_bytes = 5;
+}
+
+message Ping {
+  uint64 nonce = 1;
+}
+
+message Pong {
+  uint64 nonce = 1;
+  // Engine uptime, for liveness checks.
+  uint64 engine_uptime_ms = 2;
+}
+
+message Error {
+  ErrorCode code = 1;
+  // Human-readable detail. Never contains secrets or remote-controlled bytes.
+  string detail = 2;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  // The message could not be decoded or broke a Limits bound.
+  ERROR_CODE_MALFORMED = 1;
+  // A request arrived before Hello, or Hello arrived twice.
+  ERROR_CODE_PROTOCOL = 2;
+  // A variant this engine does not implement.
+  ERROR_CODE_UNSUPPORTED = 3;
+  ERROR_CODE_INTERNAL = 4;
+  // The session_id names no open session.
+  ERROR_CODE_NO_SUCH_SESSION = 5;
+  // A field broke a bound (size, length) or named an unknown prompt.
+  ERROR_CODE_INVALID = 6;
+}
+
+message Ack {}
+
+// ---- Sessions -----------------------------------------------------------
+//
+// A session is one SSH connection with one interactive shell. Its lifecycle
+// is reported by SessionState events. While it is being set up the engine may
+// ask the frontend to decide on the host key (HostKeyPrompt) and for
+// credentials (AuthPrompt); each prompt is answered once by its prompt_id.
+
+message TermSize {
+  // 2..=500
+  uint32 cols = 1;
+  // 2..=300
+  uint32 rows = 2;
+}
+
+message OpenSession {
+  string host = 1;
+  // 0 means 22.
+  uint32 port = 2;
+  string username = 3;
+  TermSize size = 4;
+}
+
+message SessionOpened {
+  uint64 session_id = 1;
+}
+
+enum SessionPhase {
+  SESSION_PHASE_UNSPECIFIED = 0;
+  SESSION_PHASE_CONNECTING = 1;
+  SESSION_PHASE_VERIFYING_HOST = 2;
+  SESSION_PHASE_AUTHENTICATING = 3;
+  SESSION_PHASE_OPEN = 4;
+  // Final. detail says why (remote exit, error, closed by the frontend).
+  SESSION_PHASE_CLOSED = 5;
+}
+
+message SessionState {
+  uint64 session_id = 1;
+  SessionPhase phase = 2;
+  string detail = 3;
+}
+
+enum HostKeyStatus {
+  HOST_KEY_STATUS_UNSPECIFIED = 0;
+  // No key is recorded for this host and port.
+  HOST_KEY_STATUS_UNKNOWN = 1;
+}
+
+// Asked only for hosts with no recorded key. A key that differs from the
+// recorded one is never offered for acceptance: the session closes with the
+// mismatch in its detail, as OpenSSH does.
+message HostKeyPrompt {
+  uint64 session_id = 1;
+  uint64 prompt_id = 2;
+  string host = 3;
+  uint32 port = 4;
+  // e.g. "ssh-ed25519"
+  string algorithm = 5;
+  // e.g. "SHA256:..."
+  string fingerprint = 6;
+  HostKeyStatus status = 7;
+}
+
+enum HostKeyDecision {
+  HOST_KEY_DECISION_UNSPECIFIED = 0;
+  HOST_KEY_DECISION_REJECT = 1;
+  HOST_KEY_DECISION_ACCEPT_ONCE = 2;
+  HOST_KEY_DECISION_ACCEPT_AND_REMEMBER = 3;
+}
+
+message HostKeyAnswer {
+  uint64 session_id = 1;
+  uint64 prompt_id = 2;
+  HostKeyDecision decision = 3;
+}
+
+enum AuthKind {
+  AUTH_KIND_UNSPECIFIED = 0;
+  AUTH_KIND_PASSWORD = 1;
+  AUTH_KIND_KEYBOARD_INTERACTIVE = 2;
+}
+
+message AuthField {
+  // Server-supplied text, e.g. "Password: ". Untrusted; display as text.
+  string label = 1;
+  // Whether typed input may be shown.
+  bool echo = 2;
+}
+
+message AuthPrompt {
+  uint64 session_id = 1;
+  uint64 prompt_id = 2;
+  AuthKind kind = 3;
+  string username = 4;
+  // Keyboard-interactive name and instruction, server-supplied.
+  string name = 5;
+  string instruction = 6;
+  repeated AuthField fields = 7;
+  // Set when this is a retry after a rejected answer.
+  bool retry = 8;
+}
+
+message AuthAnswer {
+  uint64 session_id = 1;
+  uint64 prompt_id = 2;
+  // One per AuthPrompt.fields entry.
+  repeated string responses = 3;
+  // Give up: the session closes.
+  bool cancel = 4;
+}
+
+// Keyboard input, already encoded as the bytes the remote expects.
+message Input {
+  uint64 session_id = 1;
+  // At most 64 KiB.
+  bytes data = 2;
+}
+
+message Resize {
+  uint64 session_id = 1;
+  TermSize size = 2;
+}
+
+// Moves the view into scrollback (positive: towards older lines).
+message Scroll {
+  uint64 session_id = 1;
+  int32 lines = 2;
+  // Return to the live screen; lines is ignored.
+  bool to_bottom = 3;
+}
+
+message CloseSession {
+  uint64 session_id = 1;
+}
+
+// ---- Terminal frames ----------------------------------------------------
+//
+// The frontend never sees remote terminal control data, only this
+// normalized screen state. The engine sends a Frame when the screen changed
+// and fewer than Limits.max_frames_in_flight frames are unacknowledged; the
+// frontend acknowledges each frame after drawing it (FrameAck). Changes made
+// meanwhile are merged into the next frame, so a slow renderer gets fewer,
+// larger frames, never a backlog.
+
+message FrameAck {
+  uint64 session_id = 1;
+  uint64 seq = 2;
+}
+
+// Asks for a full frame, e.g. after the frontend restarted.
+message RequestSnapshot {
+  uint64 session_id = 1;
+}
+
+message Frame {
+  uint64 session_id = 1;
+  // Increases by one per frame of this session.
+  uint64 seq = 2;
+  TermSize size = 3;
+  // Every row is present; otherwise only changed rows are.
+  bool full = 4;
+  repeated Row rows = 5;
+  Cursor cursor = 6;
+  Modes modes = 7;
+  // Sanitized: no control characters, at most 256 characters.
+  string title = 8;
+  // Lines scrolled back into history (0: live screen), and history length.
+  uint32 scroll_offset = 9;
+  uint32 history_lines = 10;
+}
+
+// One whole screen row. The frontend clears the row, then draws the runs.
+message Row {
+  uint32 index = 1;
+  repeated Run runs = 2;
+}
+
+// Consecutive cells with the same attributes, starting at column col.
+//
+// cells is how many columns the run covers. Either text holds one Unicode
+// scalar per cell (doubled to two columns each when FLAG_WIDE is set), or
+// cells is 1 (2 if wide) and text is a single grapheme cluster: a base
+// character plus combining marks. Anything else is malformed.
+message Run {
+  uint32 col = 1;
+  uint32 cells = 2;
+  string text = 3;
+  // Colors: 0 = the default, 0x01000000 | index = palette index (0-255),
+  // 0x02000000 | 0xRRGGBB = direct color.
+  uint32 fg = 4;
+  uint32 bg = 5;
+  // Bitwise OR of RunFlag values.
+  uint32 flags = 6;
+}
+
+enum RunFlag {
+  RUN_FLAG_NONE = 0;
+  RUN_FLAG_BOLD = 1;
+  RUN_FLAG_ITALIC = 2;
+  RUN_FLAG_UNDERLINE = 4;
+  RUN_FLAG_INVERSE = 8;
+  RUN_FLAG_DIM = 16;
+  RUN_FLAG_STRIKEOUT = 32;
+  RUN_FLAG_HIDDEN = 64;
+  RUN_FLAG_WIDE = 128;
+}
+
+enum CursorShape {
+  CURSOR_SHAPE_UNSPECIFIED = 0;
+  CURSOR_SHAPE_BLOCK = 1;
+  CURSOR_SHAPE_UNDERLINE = 2;
+  CURSOR_SHAPE_BEAM = 3;
+}
+
+message Cursor {
+  uint32 row = 1;
+  uint32 col = 2;
+  bool visible = 3;
+  CursorShape shape = 4;
+}
+
+enum MouseMode {
+  MOUSE_MODE_NONE = 0;
+  // Clicks only.
+  MOUSE_MODE_CLICK = 1;
+  // Clicks and drags.
+  MOUSE_MODE_DRAG = 2;
+  // All motion.
+  MOUSE_MODE_MOTION = 3;
+}
+
+// What the frontend needs to encode input correctly.
+message Modes {
+  // Arrow keys send ESC O x instead of ESC [ x.
+  bool app_cursor = 1;
+  bool app_keypad = 2;
+  // Wrap pastes in ESC [200~ ... ESC [201~.
+  bool bracketed_paste = 3;
+  MouseMode mouse = 4;
+  // Mouse reports use SGR encoding.
+  bool mouse_sgr = 5;
+  bool alt_screen = 6;
+}
+
+message Bell {
+  uint64 session_id = 1;
+}

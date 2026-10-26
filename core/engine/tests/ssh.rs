@@ -1,0 +1,492 @@
+//! End to end through the engine protocol: a real SSH server (russh) on
+//! localhost, driven only by encoded ClientMsg / EngineMsg bytes, the way a
+//! frontend drives the engine.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use russh::keys::{Algorithm, PrivateKey};
+use russh::server::{self, Auth, Msg, Session};
+use russh::{Channel, ChannelId, MethodKind, MethodSet};
+use tokio::net::TcpListener;
+use veil_engine::{Engine, EngineConfig, Recv};
+use veil_protocol::v1::{self, client_msg, engine_msg};
+use veil_protocol::{decode_engine, encode};
+
+const PASSWORD: &str = "correct horse";
+
+/// Accepts one password, then gives a "shell" that echoes input and answers
+/// "exit\r" by exiting with status 3.
+#[derive(Clone)]
+struct TestServer {
+    line: String,
+}
+
+impl server::Handler for TestServer {
+    type Error = russh::Error;
+
+    async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
+        if user == "alice" && password == PASSWORD {
+            Ok(Auth::Accept)
+        } else {
+            // Like OpenSSH: a wrong password may be retried. (russh's default
+            // rejection stops offering password after one failure.)
+            Ok(Auth::Reject {
+                proceed_with_methods: Some(MethodSet::from(&[MethodKind::Password][..])),
+                partial_success: false,
+            })
+        }
+    }
+
+    async fn channel_open_session(
+        &mut self,
+        _channel: Channel<Msg>,
+        reply: server::ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        reply.accept().await;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn pty_request(
+        &mut self,
+        channel: ChannelId,
+        _term: &str,
+        _cols: u32,
+        _rows: u32,
+        _pw: u32,
+        _ph: u32,
+        _modes: &[(russh::Pty, u32)],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        session.channel_success(channel)?;
+        Ok(())
+    }
+
+    async fn shell_request(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        session.channel_success(channel)?;
+        session.data(channel, b"welcome\r\n$ ".to_vec())?;
+        Ok(())
+    }
+
+    async fn window_change_request(
+        &mut self,
+        channel: ChannelId,
+        cols: u32,
+        rows: u32,
+        _pw: u32,
+        _ph: u32,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        session.data(channel, format!("[resized {cols}x{rows}]").into_bytes())?;
+        Ok(())
+    }
+
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        session.data(channel, data.to_vec())?;
+        self.line.push_str(&String::from_utf8_lossy(data));
+        if self.line.ends_with("exit\r") {
+            session.exit_status_request(channel, 3)?;
+            session.close(channel)?;
+        }
+        Ok(())
+    }
+}
+
+/// Starts the server; returns its port.
+async fn start_server() -> u16 {
+    let config = Arc::new(server::Config {
+        keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap()],
+        auth_rejection_time: Duration::from_millis(10),
+        auth_rejection_time_initial: Some(Duration::from_millis(0)),
+        ..Default::default()
+    });
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let config = config.clone();
+            tokio::spawn(async move {
+                let handler = TestServer {
+                    line: String::new(),
+                };
+                if let Ok(running) = server::run_stream(config, stream, handler).await {
+                    let _ = running.await;
+                }
+            });
+        }
+    });
+    port
+}
+
+/// A frontend, minimal: sends requests, collects events, keeps the screen.
+struct Frontend {
+    engine: Engine,
+    next_id: u64,
+    events: Vec<v1::EngineMsg>,
+    screen: Vec<String>,
+}
+
+impl Frontend {
+    fn new(data_dir: &std::path::Path) -> Frontend {
+        let engine = Engine::start(EngineConfig {
+            version: "test".into(),
+            data_dir: Some(data_dir.to_path_buf()),
+            dialer: None,
+        })
+        .unwrap();
+        let mut f = Frontend {
+            engine,
+            next_id: 1,
+            events: Vec::new(),
+            screen: Vec::new(),
+        };
+        let ack = f.call(client_msg::Body::Hello(v1::Hello {
+            protocol_version: 1,
+            client_name: "test".into(),
+        }));
+        assert!(matches!(ack.body, Some(engine_msg::Body::HelloAck(_))));
+        f
+    }
+
+    /// Sends a request and returns its reply; events seen meanwhile are kept.
+    fn call(&mut self, body: client_msg::Body) -> v1::EngineMsg {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.engine
+            .send(encode(&v1::ClientMsg {
+                request_id: id,
+                body: Some(body),
+            }))
+            .unwrap();
+        loop {
+            let msg = self.recv(Duration::from_secs(10)).expect("reply");
+            if msg.request_id == id {
+                return msg;
+            }
+            self.keep(msg);
+        }
+    }
+
+    fn recv(&mut self, timeout: Duration) -> Option<v1::EngineMsg> {
+        match self.engine.recv(timeout) {
+            Recv::Message(buf) => Some(decode_engine(&buf).unwrap()),
+            _ => None,
+        }
+    }
+
+    /// Records an event; frames update the screen and are acknowledged.
+    fn keep(&mut self, msg: v1::EngineMsg) {
+        if let Some(engine_msg::Body::Frame(frame)) = &msg.body {
+            let rows = frame.size.unwrap().rows as usize;
+            self.screen.resize(rows, String::new());
+            for row in &frame.rows {
+                let mut s = String::new();
+                for run in &row.runs {
+                    while (s.chars().count() as u32) < run.col {
+                        s.push(' ');
+                    }
+                    s.push_str(&run.text);
+                }
+                self.screen[row.index as usize] = s;
+            }
+            let (session_id, seq) = (frame.session_id, frame.seq);
+            let ack = self.call(client_msg::Body::FrameAck(v1::FrameAck { session_id, seq }));
+            assert!(
+                matches!(ack.body, Some(engine_msg::Body::Ack(_))),
+                "{ack:?}"
+            );
+        }
+        self.events.push(msg);
+    }
+
+    /// Waits until `pred` matches an event (taking it) or times out.
+    fn wait_for(&mut self, what: &str, pred: impl Fn(&v1::EngineMsg) -> bool) -> v1::EngineMsg {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Some(i) = self.events.iter().position(&pred) {
+                return self.events.remove(i);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !left.is_zero(),
+                "timed out waiting for {what}; events: {:#?}",
+                self.events
+            );
+            if let Some(msg) = self.recv(left.min(Duration::from_millis(200))) {
+                self.keep(msg);
+            }
+        }
+    }
+
+    fn wait_screen(&mut self, needle: &str) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !self.screen.iter().any(|l| l.contains(needle)) {
+            assert!(
+                Instant::now() < deadline,
+                "screen never showed {needle:?}: {:#?}",
+                self.screen
+            );
+            if let Some(msg) = self.recv(Duration::from_millis(200)) {
+                self.keep(msg);
+            }
+        }
+    }
+
+    fn state(&mut self, phase: v1::SessionPhase) -> v1::SessionState {
+        let msg = self.wait_for(&format!("{phase:?}"), |m| {
+            matches!(&m.body, Some(engine_msg::Body::SessionState(s)) if s.phase == phase as i32)
+        });
+        match msg.body {
+            Some(engine_msg::Body::SessionState(s)) => s,
+            _ => unreachable!(),
+        }
+    }
+
+    fn open(&mut self, port: u16) -> u64 {
+        let reply = self.call(client_msg::Body::OpenSession(v1::OpenSession {
+            host: "127.0.0.1".into(),
+            port: port as u32,
+            username: "alice".into(),
+            size: Some(v1::TermSize { cols: 40, rows: 10 }),
+        }));
+        match reply.body {
+            Some(engine_msg::Body::SessionOpened(o)) => o.session_id,
+            other => panic!("open failed: {other:?}"),
+        }
+    }
+
+    fn auth_prompt(&mut self) -> v1::AuthPrompt {
+        match self
+            .wait_for("auth prompt", |m| {
+                matches!(m.body, Some(engine_msg::Body::AuthPrompt(_)))
+            })
+            .body
+        {
+            Some(engine_msg::Body::AuthPrompt(p)) => p,
+            _ => unreachable!(),
+        }
+    }
+
+    fn answer_password(&mut self, p: &v1::AuthPrompt, password: &str) {
+        let ack = self.call(client_msg::Body::AuthAnswer(v1::AuthAnswer {
+            session_id: p.session_id,
+            prompt_id: p.prompt_id,
+            responses: vec![password.into()],
+            cancel: false,
+        }));
+        assert!(
+            matches!(ack.body, Some(engine_msg::Body::Ack(_))),
+            "{ack:?}"
+        );
+    }
+
+    fn input(&mut self, session_id: u64, text: &str) {
+        let ack = self.call(client_msg::Body::Input(v1::Input {
+            session_id,
+            data: text.as_bytes().to_vec(),
+        }));
+        assert!(
+            matches!(ack.body, Some(engine_msg::Body::Ack(_))),
+            "{ack:?}"
+        );
+    }
+}
+
+#[test]
+fn interactive_session_end_to_end() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let port = rt.block_on(start_server());
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Frontend::new(dir.path());
+
+    let session = f.open(port);
+    f.state(v1::SessionPhase::Connecting);
+
+    // Unknown host: the engine asks. Remember the key.
+    let prompt = match f
+        .wait_for("host key prompt", |m| {
+            matches!(m.body, Some(engine_msg::Body::HostKeyPrompt(_)))
+        })
+        .body
+    {
+        Some(engine_msg::Body::HostKeyPrompt(p)) => p,
+        _ => unreachable!(),
+    };
+    assert_eq!(prompt.algorithm, "ssh-ed25519");
+    assert!(
+        prompt.fingerprint.starts_with("SHA256:"),
+        "{}",
+        prompt.fingerprint
+    );
+    f.call(client_msg::Body::HostKeyAnswer(v1::HostKeyAnswer {
+        session_id: session,
+        prompt_id: prompt.prompt_id,
+        decision: v1::HostKeyDecision::AcceptAndRemember as i32,
+    }));
+
+    // A wrong password is retried, then the right one gets in.
+    let p = f.auth_prompt();
+    assert_eq!(p.kind, v1::AuthKind::Password as i32);
+    assert!(!p.retry);
+    assert!(!p.fields[0].echo);
+    f.answer_password(&p, "wrong");
+    let p = f.auth_prompt();
+    assert!(p.retry);
+    f.answer_password(&p, PASSWORD);
+    f.state(v1::SessionPhase::Open);
+
+    f.wait_screen("welcome");
+    f.input(session, "echo hi");
+    f.wait_screen("$ echo hi");
+
+    let ack = f.call(client_msg::Body::Resize(v1::Resize {
+        session_id: session,
+        size: Some(v1::TermSize { cols: 60, rows: 12 }),
+    }));
+    assert!(matches!(ack.body, Some(engine_msg::Body::Ack(_))));
+    f.wait_screen("[resized 60x12]");
+    assert_eq!(f.screen.len(), 12);
+
+    f.input(session, "exit\r");
+    let closed = f.state(v1::SessionPhase::Closed);
+    assert!(closed.detail.contains("status 3"), "{}", closed.detail);
+
+    // The key was remembered: a second session goes straight to auth.
+    let second = f.open(port);
+    let p = f.auth_prompt();
+    assert_eq!(p.session_id, second);
+    assert!(
+        !f.events
+            .iter()
+            .any(|m| matches!(m.body, Some(engine_msg::Body::HostKeyPrompt(_)))),
+        "asked about a remembered key"
+    );
+    f.answer_password(&p, PASSWORD);
+    f.state(v1::SessionPhase::Open);
+
+    // Closing from the frontend.
+    let ack = f.call(client_msg::Body::CloseSession(v1::CloseSession {
+        session_id: second,
+    }));
+    assert!(matches!(ack.body, Some(engine_msg::Body::Ack(_))));
+    f.state(v1::SessionPhase::Closed);
+    let gone = f.call(client_msg::Body::Input(v1::Input {
+        session_id: second,
+        data: b"x".to_vec(),
+    }));
+    assert!(matches!(gone.body, Some(engine_msg::Body::Error(_))));
+    drop(rt);
+}
+
+#[test]
+fn rejected_host_key_closes_the_session() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let port = rt.block_on(start_server());
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Frontend::new(dir.path());
+    let session = f.open(port);
+    let prompt = match f
+        .wait_for("host key prompt", |m| {
+            matches!(m.body, Some(engine_msg::Body::HostKeyPrompt(_)))
+        })
+        .body
+    {
+        Some(engine_msg::Body::HostKeyPrompt(p)) => p,
+        _ => unreachable!(),
+    };
+    f.call(client_msg::Body::HostKeyAnswer(v1::HostKeyAnswer {
+        session_id: session,
+        prompt_id: prompt.prompt_id,
+        decision: v1::HostKeyDecision::Reject as i32,
+    }));
+    let closed = f.state(v1::SessionPhase::Closed);
+    assert_eq!(closed.detail, "host key rejected");
+    assert!(!dir.path().join("known_hosts").exists());
+    drop(rt);
+}
+
+#[test]
+fn changed_host_key_is_refused_without_asking() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let port = rt.block_on(start_server());
+    let dir = tempfile::tempdir().unwrap();
+    // A different key recorded for this host and port.
+    let other = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+    std::fs::write(
+        dir.path().join("known_hosts"),
+        format!(
+            "[127.0.0.1]:{port} {}\n",
+            other.public_key().to_openssh().unwrap()
+        ),
+    )
+    .unwrap();
+    let mut f = Frontend::new(dir.path());
+    f.open(port);
+    let closed = f.state(v1::SessionPhase::Closed);
+    assert!(
+        closed.detail.starts_with("HOST KEY CHANGED"),
+        "{}",
+        closed.detail
+    );
+    assert!(
+        !f.events
+            .iter()
+            .any(|m| matches!(m.body, Some(engine_msg::Body::HostKeyPrompt(_))))
+    );
+    drop(rt);
+}
+
+#[test]
+fn bad_requests_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Frontend::new(dir.path());
+    for open in [
+        v1::OpenSession {
+            host: "".into(),
+            port: 22,
+            username: "a".into(),
+            size: Some(v1::TermSize { cols: 80, rows: 24 }),
+        },
+        v1::OpenSession {
+            host: "h".into(),
+            port: 70000,
+            username: "a".into(),
+            size: Some(v1::TermSize { cols: 80, rows: 24 }),
+        },
+        v1::OpenSession {
+            host: "h".into(),
+            port: 22,
+            username: "a".into(),
+            size: Some(v1::TermSize {
+                cols: 10_000,
+                rows: 24,
+            }),
+        },
+    ] {
+        let reply = f.call(client_msg::Body::OpenSession(open));
+        assert!(
+            matches!(reply.body, Some(engine_msg::Body::Error(_))),
+            "{reply:?}"
+        );
+    }
+    let reply = f.call(client_msg::Body::Input(v1::Input {
+        session_id: 99,
+        data: vec![1],
+    }));
+    match reply.body {
+        Some(engine_msg::Body::Error(e)) => assert_eq!(e.code, v1::ErrorCode::NoSuchSession as i32),
+        other => panic!("{other:?}"),
+    }
+}

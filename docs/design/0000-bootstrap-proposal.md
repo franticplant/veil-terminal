@@ -10,8 +10,8 @@ Facts checked on this machine, not assumed:
   is a system API that ships in the virtualization APEX as a shared library.
 - No Rust toolchain is installed yet. Go, the Android SDK (build-tools 35–37) and NDKs 23.1/23.2/30
   are installed.
-- `adb devices` is empty. Tailmesh development runs without adb, over the USB-tether IP
-  (`10.29.103.x`) and its own remote-control API.
+- `adb devices` is empty. Tailmesh development runs without adb, over the USB tether and its own
+  remote-control API.
 
 ---
 
