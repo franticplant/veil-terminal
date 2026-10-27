@@ -37,6 +37,9 @@ pub use ssh::{Dialer, DirectDialer};
 /// Messages queued in each direction before the sender waits.
 const QUEUE_DEPTH: usize = 64;
 
+/// Public keys one session may offer.
+const MAX_KEYS: usize = 8;
+
 /// Commands queued per session. Input beyond this is refused, not buffered.
 const SESSION_QUEUE_DEPTH: usize = 256;
 
@@ -250,6 +253,14 @@ impl Connection {
                     .unwrap_or(v1::HostKeyDecision::Reject);
                 self.answer(a.session_id, a.prompt_id, Answer::HostKey(decision))
             }
+            Some(client_msg::Body::SignAnswer(a)) => self.answer(
+                a.session_id,
+                a.prompt_id,
+                Answer::Sign {
+                    signature: a.signature,
+                    cancel: a.cancel,
+                },
+            ),
             Some(client_msg::Body::AuthAnswer(a)) => self.answer(
                 a.session_id,
                 a.prompt_id,
@@ -281,7 +292,12 @@ impl Connection {
                 self.command(s.session_id, cmd)
             }
             Some(client_msg::Body::FrameAck(a)) => {
-                self.command(a.session_id, Command::FrameAck(a.seq))
+                // A frame can be acknowledged after its session ended (the last
+                // frame races the close); that is not an error.
+                match self.command(a.session_id, Command::FrameAck(a.seq)) {
+                    Err((v1::ErrorCode::NoSuchSession, _)) => Ok(()),
+                    other => other,
+                }
             }
             Some(client_msg::Body::RequestSnapshot(r)) => {
                 self.command(r.session_id, Command::Snapshot)
@@ -371,6 +387,17 @@ impl Connection {
             _ => return Err("invalid port".into()),
         };
 
+        if open.public_keys.len() > MAX_KEYS {
+            return Err(format!("at most {MAX_KEYS} public keys"));
+        }
+        let keys = open
+            .public_keys
+            .iter()
+            .map(|k| {
+                russh::keys::PublicKey::from_openssh(k)
+                    .map_err(|e| format!("invalid public key: {e}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let session_id = self.next_session;
         self.next_session += 1;
         let stats = Arc::new(SessionStats::new(
@@ -402,6 +429,7 @@ impl Connection {
             host: open.host,
             port,
             user: open.username,
+            keys,
             cols,
             rows,
         };

@@ -27,6 +27,10 @@ pub(crate) enum Answer {
         responses: Vec<String>,
         cancel: bool,
     },
+    Sign {
+        signature: Vec<u8>,
+        cancel: bool,
+    },
 }
 
 /// Open prompts of one session, by prompt_id. The connection delivers
@@ -112,6 +116,8 @@ pub(crate) struct Spec {
     pub host: String,
     pub port: u16,
     pub user: String,
+    /// Public keys the frontend can sign with, tried before passwords.
+    pub keys: Vec<russh::keys::PublicKey>,
     pub cols: u16,
     pub rows: u16,
 }
@@ -171,7 +177,7 @@ async fn run_inner(
     };
 
     prompter.state(v1::SessionPhase::Authenticating, "").await;
-    ssh::authenticate(&mut handle, prompter, &spec.user).await?;
+    ssh::authenticate(&mut handle, prompter, &spec).await?;
 
     let err = |what: &str| {
         let what = what.to_string();

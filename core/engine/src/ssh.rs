@@ -16,7 +16,7 @@ use russh::{MethodKind, MethodSet};
 use tokio::net::TcpStream;
 use veil_protocol::v1;
 
-use crate::session::{Answer, Prompter};
+use crate::session::{Answer, Prompter, Spec};
 
 /// How the engine obtains a connected TCP stream. This is the network
 /// capability boundary: today [`DirectDialer`] connects from this process;
@@ -160,12 +160,83 @@ impl client::Handler for Client {
 /// How many times credentials may be re-asked after a rejection.
 const AUTH_ATTEMPTS: u32 = 3;
 
-/// Authenticates as `user`, asking the frontend for credentials.
+/// Asks the frontend's signer to sign a userauth request with one of the
+/// session's public keys. The private key never reaches the engine.
+struct PromptSigner<'a> {
+    prompter: &'a Prompter,
+    spec: &'a Spec,
+}
+
+#[derive(Debug)]
+pub(crate) enum SignError {
+    Send,
+    Refused,
+}
+
+impl From<russh::SendError> for SignError {
+    fn from(_: russh::SendError) -> Self {
+        SignError::Send
+    }
+}
+
+impl russh::Signer for PromptSigner<'_> {
+    type Error = SignError;
+
+    fn auth_sign(
+        &mut self,
+        key: &russh::keys::agent::AgentIdentity,
+        _hash_alg: Option<HashAlg>,
+        mut to_sign: Vec<u8>,
+    ) -> impl Future<Output = Result<Vec<u8>, SignError>> + Send {
+        let public = match key {
+            russh::keys::agent::AgentIdentity::PublicKey { key, .. } => key.to_openssh().ok(),
+            _ => None,
+        };
+        async move {
+            let public = public.ok_or(SignError::Refused)?;
+            let answer = self
+                .prompter
+                .ask(|session_id, prompt_id| {
+                    v1::engine_msg::Body::SignRequest(v1::SignRequest {
+                        session_id,
+                        prompt_id,
+                        public_key: public.clone(),
+                        username: self.spec.user.clone(),
+                        host: self.spec.host.clone(),
+                        port: self.spec.port as u32,
+                        data: to_sign.clone(),
+                    })
+                })
+                .await;
+            match answer {
+                Some(Answer::Sign {
+                    signature,
+                    cancel: false,
+                }) if !signature.is_empty() && signature.len() <= MAX_SIGNATURE_BYTES => {
+                    // russh sends the request data followed by the signature
+                    // blob as an SSH string.
+                    to_sign.extend_from_slice(&(signature.len() as u32).to_be_bytes());
+                    to_sign.extend_from_slice(&signature);
+                    Ok(to_sign)
+                }
+                _ => Err(SignError::Refused),
+            }
+        }
+    }
+}
+
+/// The largest signature blob accepted from the signer.
+const MAX_SIGNATURE_BYTES: usize = 2048;
+
+/// Authenticates as `spec.user`: the session's public keys first (each
+/// signature asked of the frontend), then password or keyboard-interactive
+/// prompts.
 pub(crate) async fn authenticate(
     handle: &mut client::Handle<Client>,
     prompter: &Prompter,
-    user: &str,
+    spec: &Spec,
 ) -> Result<(), String> {
+    let user = spec.user.as_str();
     let err = |e: russh::Error| format!("authentication failed: {e}");
     let first = handle.authenticate_none(user).await.map_err(err)?;
     let mut methods = match first {
@@ -174,6 +245,37 @@ pub(crate) async fn authenticate(
             remaining_methods, ..
         } => remaining_methods,
     };
+
+    if methods.contains(&MethodKind::PublicKey) {
+        for key in &spec.keys {
+            let mut signer = PromptSigner { prompter, spec };
+            match handle
+                .authenticate_publickey_with(user, key.clone(), None, &mut signer)
+                .await
+            {
+                Ok(russh::client::AuthResult::Success) => {
+                    prompter.log(
+                        v1::LogLevel::Info,
+                        "ssh",
+                        &format!("authenticated with key {}", key.algorithm()),
+                    );
+                    return Ok(());
+                }
+                Ok(russh::client::AuthResult::Failure {
+                    remaining_methods, ..
+                }) => {
+                    prompter.log(v1::LogLevel::Info, "ssh", "the server did not accept a key");
+                    methods = remaining_methods;
+                }
+                Err(SignError::Refused) => {
+                    prompter.log(v1::LogLevel::Warn, "ssh", "the signer refused to sign");
+                }
+                Err(SignError::Send) => {
+                    return Err("connection lost during key authentication".into());
+                }
+            }
+        }
+    }
 
     for attempt in 0..AUTH_ATTEMPTS {
         let retry = attempt > 0;

@@ -38,6 +38,7 @@ message ClientMsg {
     GetLogs get_logs = 22;
     ListHostKeys list_host_keys = 23;
     ForgetHostKey forget_host_key = 24;
+    SignAnswer sign_answer = 25;
   }
 }
 
@@ -63,6 +64,7 @@ message EngineMsg {
     Frame frame = 23;
     Bell bell = 24;
     ClipboardWrite clipboard_write = 25;
+    SignRequest sign_request = 26;
   }
 }
 
@@ -147,6 +149,10 @@ message OpenSession {
   uint32 port = 2;
   string username = 3;
   TermSize size = 4;
+  // Public keys (OpenSSH format, e.g. "ecdsa-sha2-nistp256 AAAA...") the
+  // frontend can sign with, tried in order before passwords. The private keys
+  // never reach the engine: each signature is a SignRequest.
+  repeated string public_keys = 5;
 }
 
 message SessionOpened {
@@ -479,4 +485,35 @@ message HostKeyList {
 message ForgetHostKey {
   string host = 1;
   uint32 port = 2;
+}
+
+// ---- Key signing ----------------------------------------------------------
+//
+// The engine never holds private keys. When a server accepts one of the
+// session's public keys, the engine asks the frontend's signer to sign the
+// SSH user-authentication request. The signer must check that `data` really
+// is a publickey userauth request for `username` and `public_key` (RFC 4252
+// section 7) before signing: it signs a login, never arbitrary bytes.
+
+message SignRequest {
+  uint64 session_id = 1;
+  uint64 prompt_id = 2;
+  // OpenSSH format, one of OpenSession.public_keys.
+  string public_key = 3;
+  string username = 4;
+  string host = 5;
+  uint32 port = 6;
+  // The bytes to sign: string session identifier, then the
+  // SSH_MSG_USERAUTH_REQUEST for "publickey" with this key.
+  bytes data = 7;
+}
+
+message SignAnswer {
+  uint64 session_id = 1;
+  uint64 prompt_id = 2;
+  // The SSH signature blob: string algorithm, string signature (for ECDSA:
+  // mpint r, mpint s).
+  bytes signature = 3;
+  // Refused: the engine moves on to the next key or method.
+  bool cancel = 4;
 }

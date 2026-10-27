@@ -5,7 +5,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use russh::keys::{Algorithm, PrivateKey};
+use russh::keys::ssh_encoding::Encode;
+use russh::keys::{Algorithm, EcdsaCurve, PrivateKey, PublicKey};
 use russh::server::{self, Auth, Msg, Session};
 use russh::{Channel, ChannelId, MethodKind, MethodSet};
 use tokio::net::TcpListener;
@@ -20,10 +21,41 @@ const PASSWORD: &str = "correct horse";
 #[derive(Clone)]
 struct TestServer {
     line: String,
+    /// The one public key accepted for alice, if any.
+    key: Option<PublicKey>,
+}
+
+impl TestServer {
+    fn judge(&self, user: &str, key: &PublicKey) -> Auth {
+        if user == "alice" && self.key.as_ref() == Some(key) {
+            Auth::Accept
+        } else {
+            Auth::Reject {
+                proceed_with_methods: Some(MethodSet::from(&[MethodKind::Password][..])),
+                partial_success: false,
+            }
+        }
+    }
 }
 
 impl server::Handler for TestServer {
     type Error = russh::Error;
+
+    async fn auth_publickey_offered(
+        &mut self,
+        user: &str,
+        offer: server::PublicKeyOffer<'_>,
+    ) -> Result<Auth, Self::Error> {
+        Ok(self.judge(user, offer.public_key))
+    }
+
+    async fn auth_publickey(
+        &mut self,
+        user: &str,
+        key: server::VerifiedPublicKey<'_>,
+    ) -> Result<Auth, Self::Error> {
+        Ok(self.judge(user, key.public_key))
+    }
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
         if user == "alice" && password == PASSWORD {
@@ -105,6 +137,11 @@ impl server::Handler for TestServer {
 
 /// Starts the server; returns its port.
 async fn start_server() -> u16 {
+    start_server_with(None).await
+}
+
+/// Starts a server that also accepts `key` for alice.
+async fn start_server_with(key: Option<PublicKey>) -> u16 {
     let config = Arc::new(server::Config {
         keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap()],
         auth_rejection_time: Duration::from_millis(10),
@@ -117,9 +154,11 @@ async fn start_server() -> u16 {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
             let config = config.clone();
+            let key = key.clone();
             tokio::spawn(async move {
                 let handler = TestServer {
                     line: String::new(),
+                    key: key.clone(),
                 };
                 if let Ok(running) = server::run_stream(config, stream, handler).await {
                     let _ = running.await;
@@ -136,6 +175,8 @@ struct Frontend {
     next_id: u64,
     events: Vec<v1::EngineMsg>,
     screen: Vec<String>,
+    /// FrameAck requests whose replies have not arrived yet.
+    acks: std::collections::HashSet<u64>,
 }
 
 impl Frontend {
@@ -151,6 +192,7 @@ impl Frontend {
             next_id: 1,
             events: Vec::new(),
             screen: Vec::new(),
+            acks: Default::default(),
         };
         let ack = f.call(client_msg::Body::Hello(v1::Hello {
             protocol_version: 1,
@@ -164,6 +206,7 @@ impl Frontend {
     fn call(&mut self, body: client_msg::Body) -> v1::EngineMsg {
         let id = self.next_id;
         self.next_id += 1;
+        let what = format!("{body:?}");
         self.engine
             .send(encode(&v1::ClientMsg {
                 request_id: id,
@@ -171,12 +214,31 @@ impl Frontend {
             }))
             .unwrap();
         loop {
-            let msg = self.recv(Duration::from_secs(10)).expect("reply");
+            let Some(msg) = self.recv(Duration::from_secs(10)) else {
+                panic!(
+                    "no reply to request {id} ({what}); events so far: {:#?}",
+                    self.events
+                );
+            };
             if msg.request_id == id {
                 return msg;
             }
             self.keep(msg);
         }
+    }
+
+    /// Sends a FrameAck without waiting: its reply is checked when it arrives (in [`keep`]). Waiting
+    /// here would nest inside another request's wait and could take that request's reply.
+    fn ack(&mut self, session_id: u64, seq: u64) {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.acks.insert(id);
+        self.engine
+            .send(encode(&v1::ClientMsg {
+                request_id: id,
+                body: Some(client_msg::Body::FrameAck(v1::FrameAck { session_id, seq })),
+            }))
+            .unwrap();
     }
 
     fn recv(&mut self, timeout: Duration) -> Option<v1::EngineMsg> {
@@ -202,11 +264,14 @@ impl Frontend {
                 self.screen[row.index as usize] = s;
             }
             let (session_id, seq) = (frame.session_id, frame.seq);
-            let ack = self.call(client_msg::Body::FrameAck(v1::FrameAck { session_id, seq }));
+            self.ack(session_id, seq);
+        }
+        if self.acks.remove(&msg.request_id) {
             assert!(
-                matches!(ack.body, Some(engine_msg::Body::Ack(_))),
-                "{ack:?}"
+                matches!(msg.body, Some(engine_msg::Body::Ack(_))),
+                "{msg:?}"
             );
+            return;
         }
         self.events.push(msg);
     }
@@ -255,11 +320,16 @@ impl Frontend {
     }
 
     fn open(&mut self, port: u16) -> u64 {
+        self.open_with_keys(port, vec![])
+    }
+
+    fn open_with_keys(&mut self, port: u16, public_keys: Vec<String>) -> u64 {
         let reply = self.call(client_msg::Body::OpenSession(v1::OpenSession {
             host: "127.0.0.1".into(),
             port: port as u32,
             username: "alice".into(),
             size: Some(v1::TermSize { cols: 40, rows: 10 }),
+            public_keys,
         }));
         match reply.body {
             Some(engine_msg::Body::SessionOpened(o)) => o.session_id,
@@ -515,12 +585,14 @@ fn bad_requests_are_refused() {
             port: 22,
             username: "a".into(),
             size: Some(v1::TermSize { cols: 80, rows: 24 }),
+            public_keys: vec![],
         },
         v1::OpenSession {
             host: "h".into(),
             port: 70000,
             username: "a".into(),
             size: Some(v1::TermSize { cols: 80, rows: 24 }),
+            public_keys: vec![],
         },
         v1::OpenSession {
             host: "h".into(),
@@ -530,6 +602,7 @@ fn bad_requests_are_refused() {
                 cols: 10_000,
                 rows: 24,
             }),
+            public_keys: vec![],
         },
     ] {
         let reply = f.call(client_msg::Body::OpenSession(open));
@@ -546,4 +619,102 @@ fn bad_requests_are_refused() {
         Some(engine_msg::Body::Error(e)) => assert_eq!(e.code, v1::ErrorCode::NoSuchSession as i32),
         other => panic!("{other:?}"),
     }
+}
+
+fn sign_request(f: &mut Frontend) -> v1::SignRequest {
+    match f
+        .wait_for("sign request", |m| {
+            matches!(m.body, Some(engine_msg::Body::SignRequest(_)))
+        })
+        .body
+    {
+        Some(engine_msg::Body::SignRequest(r)) => r,
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn key_authentication_signs_through_the_frontend() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let key = PrivateKey::random(
+        &mut rand::rng(),
+        Algorithm::Ecdsa {
+            curve: EcdsaCurve::NistP256,
+        },
+    )
+    .unwrap();
+    let public = key.public_key().clone();
+    let port = rt.block_on(start_server_with(Some(public.clone())));
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Frontend::new(dir.path());
+
+    let openssh = public.to_openssh().unwrap();
+    let session = f.open_with_keys(port, vec![openssh.clone()]);
+    let p = match f
+        .wait_for("host key prompt", |m| {
+            matches!(m.body, Some(engine_msg::Body::HostKeyPrompt(_)))
+        })
+        .body
+    {
+        Some(engine_msg::Body::HostKeyPrompt(p)) => p,
+        _ => unreachable!(),
+    };
+    f.call(client_msg::Body::HostKeyAnswer(v1::HostKeyAnswer {
+        session_id: session,
+        prompt_id: p.prompt_id,
+        decision: v1::HostKeyDecision::AcceptOnce as i32,
+    }));
+
+    // The engine asks to sign a publickey userauth request for alice.
+    let req = sign_request(&mut f);
+    assert_eq!(req.public_key, openssh);
+    assert_eq!(req.username, "alice");
+    let marker = |s: &[u8]| req.data.windows(s.len()).any(|w| w == s);
+    assert!(marker(b"publickey") && marker(b"alice") && marker(b"ssh-connection"));
+
+    // The "frontend" signs with the private key the engine never saw.
+    let sig: russh::keys::ssh_key::Signature =
+        russh::keys::signature::Signer::try_sign(&key, &req.data).unwrap();
+    f.call(client_msg::Body::SignAnswer(v1::SignAnswer {
+        session_id: session,
+        prompt_id: req.prompt_id,
+        signature: sig.encode_vec().unwrap(),
+        cancel: false,
+    }));
+    f.state(v1::SessionPhase::Open);
+    assert!(
+        !f.events
+            .iter()
+            .any(|m| matches!(m.body, Some(engine_msg::Body::AuthPrompt(_)))),
+        "asked for a password although the key was accepted"
+    );
+
+    // A refused signature falls back to the password.
+    let second = f.open_with_keys(port, vec![openssh]);
+    let p = match f
+        .wait_for("host key prompt", |m| {
+            matches!(m.body, Some(engine_msg::Body::HostKeyPrompt(_)))
+        })
+        .body
+    {
+        Some(engine_msg::Body::HostKeyPrompt(p)) => p,
+        _ => unreachable!(),
+    };
+    f.call(client_msg::Body::HostKeyAnswer(v1::HostKeyAnswer {
+        session_id: second,
+        prompt_id: p.prompt_id,
+        decision: v1::HostKeyDecision::AcceptOnce as i32,
+    }));
+    let req = sign_request(&mut f);
+    f.call(client_msg::Body::SignAnswer(v1::SignAnswer {
+        session_id: second,
+        prompt_id: req.prompt_id,
+        signature: vec![],
+        cancel: true,
+    }));
+    let p = f.auth_prompt();
+    assert_eq!(p.session_id, second);
+    f.answer_password(&p, PASSWORD);
+    f.state(v1::SessionPhase::Open);
+    drop(rt);
 }
