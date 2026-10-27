@@ -8,6 +8,7 @@ import io.github.franticplant.veil.engine.SessionRegistry
 import io.github.franticplant.veil.frontend.BuildInfo
 import io.github.franticplant.veil.frontend.EngineHost
 import io.github.franticplant.veil.frontend.Profiles
+import io.github.franticplant.veil.frontend.SshKeys
 import io.github.franticplant.veil.frontend.UiPrefs
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -43,7 +44,11 @@ class VeilApplication : Application(), EngineHost {
     /** When this process started, for uptime. */
     val startedAtMs = System.currentTimeMillis()
 
-    override val sessions: SessionRegistry by lazy { SessionRegistry(backend, appScope, log) }
+    override val sshKeys: SshKeys by lazy { SshKeys(log) }
+
+    override val sessions: SessionRegistry by lazy {
+        SessionRegistry(backend, appScope, log, sshKeys)
+    }
 
     override val profiles: Profiles by lazy { Profiles(this) }
 

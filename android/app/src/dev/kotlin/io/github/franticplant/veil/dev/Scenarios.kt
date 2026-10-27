@@ -97,18 +97,20 @@ internal class Scenarios(private val app: VeilApplication) {
         val name = p.string("name")
         val target =
             if (p.has("profile")) {
-                val label = p.string("profile")
-                app.profiles.all.value.firstOrNull { it.label == label || it.displayName == label }
-                    ?: throw ApiException(ErrorCode.NOT_FOUND, "no profile '$label'")
-            } else {
-                if (!p.has("host") || !p.has("user")) {
-                    throw ApiException(
-                        ErrorCode.INVALID_PARAMS,
-                        "give either profile, or host and user",
-                    )
+                    val label = p.string("profile")
+                    app.profiles.all.value.firstOrNull {
+                        it.label == label || it.displayName == label
+                    } ?: throw ApiException(ErrorCode.NOT_FOUND, "no profile '$label'")
+                } else {
+                    if (!p.has("host") || !p.has("user")) {
+                        throw ApiException(
+                            ErrorCode.INVALID_PARAMS,
+                            "give either profile, or host and user",
+                        )
+                    }
+                    Target(p.string("host"), p.intOr("port", 22), p.string("user"))
                 }
-                Target(p.string("host"), p.intOr("port", 22), p.string("user"))
-            }
+                .let { if (p.has("key")) it.copy(keyId = p.string("key")) else it }
         val setup =
             Setup(
                 target,

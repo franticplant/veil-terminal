@@ -37,7 +37,14 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /** Where a session connects. Holds no secrets. */
-data class Target(val host: String, val port: Int, val username: String, val label: String = "") {
+/** Where a session connects, and with which key ([keyId], empty for none). Holds no secrets. */
+data class Target(
+    val host: String,
+    val port: Int,
+    val username: String,
+    val label: String = "",
+    val keyId: String = "",
+) {
     val displayName: String
         get() = label.ifEmpty { if (port == 22) "$username@$host" else "$username@$host:$port" }
 }
@@ -54,6 +61,8 @@ class SessionRegistry(
     private val backend: EngineBackend,
     private val scope: CoroutineScope,
     internal val log: LogRing = LogRing(),
+    /** Signs logins for sessions with a key; null: keys are not offered. */
+    private val signer: LoginSigner? = null,
 ) {
     private val connectLock = Mutex()
     @Volatile private var conn: EngineConnection? = null
@@ -157,6 +166,7 @@ class SessionRegistry(
                             .setPort(target.port)
                             .setUsername(target.username)
                             .setSize(TermSize.newBuilder().setCols(cols).setRows(rows))
+                            .addAllPublicKeys(publicKeysFor(target))
                     )
             )
         val id = reply.expect(EngineMsg.BodyCase.SESSION_OPENED).sessionOpened.sessionId
@@ -165,6 +175,38 @@ class SessionRegistry(
         byId[id] = session
         _sessions.value = _sessions.value + session
         return session
+    }
+
+    private fun publicKeysFor(target: Target): List<String> {
+        if (target.keyId.isEmpty()) return emptyList()
+        val key = signer?.publicKey(target.keyId)
+        if (key == null)
+            log.warn("session", "key '${target.keyId}' is not available; using passwords")
+        return listOfNotNull(key)
+    }
+
+    /** Answers a sign request with the session's key, off the caller's thread. */
+    private fun sign(session: Session, req: io.github.franticplant.veil.engine.proto.SignRequest) {
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val sig =
+                try {
+                    signer?.sign(session.target.keyId, session.target.username, req)
+                } catch (e: Exception) {
+                    log.warn(
+                        "session",
+                        "signing failed: ${e.javaClass.simpleName}: ${e.message}",
+                        session.id,
+                    )
+                    null
+                }
+            log.info(
+                "session",
+                if (sig != null) "signed the login with key '${session.target.keyId}'"
+                else "refused to sign",
+                session.id,
+            )
+            session.answerSign(req, sig)
+        }
     }
 
     /** Removes a closed session from [sessions]. */
@@ -186,6 +228,8 @@ class SessionRegistry(
                 byId[msg.authPrompt.sessionId]?.onPrompt(Prompt.Auth(msg.authPrompt))
             EngineMsg.BodyCase.FRAME -> byId[msg.frame.sessionId]?.onFrame(msg.frame)
             EngineMsg.BodyCase.BELL -> byId[msg.bell.sessionId]?.onBell()
+            EngineMsg.BodyCase.SIGN_REQUEST ->
+                byId[msg.signRequest.sessionId]?.let { sign(it, msg.signRequest) }
             EngineMsg.BodyCase.CLIPBOARD_WRITE ->
                 byId[msg.clipboardWrite.sessionId]?.onClipboard(
                     ClipboardOffer(msg.clipboardWrite.text, msg.clipboardWrite.primary)
@@ -300,6 +344,20 @@ internal constructor(
                         .setDecision(decision)
                 )
         )
+    }
+
+    /** Answers a sign request with a signature blob, or refuses it (null). */
+    internal fun answerSign(
+        req: io.github.franticplant.veil.engine.proto.SignRequest,
+        signature: ByteArray?,
+    ) {
+        val answer =
+            io.github.franticplant.veil.engine.proto.SignAnswer.newBuilder()
+                .setSessionId(id)
+                .setPromptId(req.promptId)
+        if (signature == null) answer.setCancel(true)
+        else answer.setSignature(ByteString.copyFrom(signature))
+        send(ClientMsg.newBuilder().setSignAnswer(answer))
     }
 
     /** Answers an auth prompt with one response per field, or cancels it. */

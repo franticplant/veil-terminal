@@ -46,6 +46,7 @@ class AppMethods(private val app: VeilApplication) {
         addRead()
         addContent()
         addOperate()
+        addKeys()
         addLifecycle()
         addScenarios()
     }
@@ -453,23 +454,28 @@ class AppMethods(private val app: VeilApplication) {
                 str("user", "User name."),
                 int("cols", "Terminal columns (default 80).", min = 2, max = 500),
                 int("rows", "Terminal rows (default 24).", min = 2, max = 300),
+                str(
+                    "key",
+                    "A key name (keys.list) to try before passwords; overrides the profile's.",
+                ),
             )
         ) { p ->
             val target =
                 if (p.has("profile")) {
-                    val label = p.string("profile")
-                    app.profiles.all.value.firstOrNull {
-                        it.label == label || it.displayName == label
-                    } ?: throw ApiException(ErrorCode.NOT_FOUND, "no profile '$label'")
-                } else {
-                    if (!p.has("host") || !p.has("user")) {
-                        throw ApiException(
-                            ErrorCode.INVALID_PARAMS,
-                            "give either profile, or host and user",
-                        )
+                        val label = p.string("profile")
+                        app.profiles.all.value.firstOrNull {
+                            it.label == label || it.displayName == label
+                        } ?: throw ApiException(ErrorCode.NOT_FOUND, "no profile '$label'")
+                    } else {
+                        if (!p.has("host") || !p.has("user")) {
+                            throw ApiException(
+                                ErrorCode.INVALID_PARAMS,
+                                "give either profile, or host and user",
+                            )
+                        }
+                        Target(p.string("host"), p.intOr("port", 22), p.string("user"))
                     }
-                    Target(p.string("host"), p.intOr("port", 22), p.string("user"))
-                }
+                    .let { if (p.has("key")) it.copy(keyId = p.string("key")) else it }
             val s = engine { registry.open(target, p.intOr("cols", 80), p.intOr("rows", 24)) }
             app.log.info("dev", "session opened through the dev API", s.id)
             JSONObject().put("id", s.id)
@@ -692,10 +698,18 @@ class AppMethods(private val app: VeilApplication) {
                 str("host", "Host name or address.", required = true),
                 int("port", "Port (default 22).", min = 1, max = 65535),
                 str("user", "User name.", required = true),
+                str("key", "A key name (keys.list) to try before passwords."),
             )
         ) { p ->
             val label = p.string("label")
-            val t = Target(p.string("host"), p.intOr("port", 22), p.string("user"), label)
+            val t =
+                Target(
+                    p.string("host"),
+                    p.intOr("port", 22),
+                    p.string("user"),
+                    label,
+                    p.stringOr("key", ""),
+                )
             app.profiles.save(app.profiles.all.value.firstOrNull { it.label == label }, t)
             Json.target(t)
         }
@@ -713,6 +727,59 @@ class AppMethods(private val app: VeilApplication) {
                 app.profiles.all.value.firstOrNull { it.label == p.string("label") }
                     ?: throw ApiException(ErrorCode.NOT_FOUND, "no profile '${p.string("label")}'")
             app.profiles.delete(t)
+            null
+        }
+    }
+
+    // ---- keys -----------------------------------------------------------------
+
+    private fun addKeys() {
+        fun json(k: io.github.franticplant.veil.frontend.SshKeys.Key) =
+            JSONObject()
+                .put("name", k.name)
+                .put("publicKey", k.publicKey)
+                .put("fingerprint", k.fingerprint)
+                .put("security", k.security.name.lowercase())
+
+        table.add(
+            method(
+                "keys.list",
+                Scope.READ,
+                "SSH keys in Android Keystore: name, public key, fingerprint, where it lives " +
+                    "(strongbox, tee). Private keys are never exported.",
+            )
+        ) {
+            JSONArray().apply { app.sshKeys.keys.value.forEach { put(json(it)) } }
+        }
+        table.add(
+            method(
+                "keys.create",
+                Scope.OPERATE,
+                "Creates an ECDSA P-256 key in Android Keystore (StrongBox when the phone has it).",
+                true,
+                str("name", "1-40 letters, digits, '.', '_' or '-'.", required = true),
+                bool("strongBox", "Ask for StrongBox (default true; falls back to the TEE)."),
+            )
+        ) { p ->
+            try {
+                json(app.sshKeys.create(p.string("name"), p.boolOr("strongBox", true)))
+            } catch (e: IllegalArgumentException) {
+                throw ApiException(ErrorCode.INVALID_PARAMS, e.message ?: "invalid")
+            }
+        }
+        table.add(
+            method(
+                "keys.delete",
+                Scope.OPERATE,
+                "Destroys a key. Irreversible: servers that trust only it will refuse logins.",
+                true,
+                str("name", "The key.", required = true),
+            )
+        ) { p ->
+            if (app.sshKeys.keys.value.none { it.name == p.string("name") }) {
+                throw ApiException(ErrorCode.NOT_FOUND, "no key '${p.string("name")}'")
+            }
+            app.sshKeys.delete(p.string("name"))
             null
         }
     }
@@ -803,6 +870,7 @@ class AppMethods(private val app: VeilApplication) {
                     min = 1_000,
                     max = 600_000,
                 ),
+                str("key", "A key name (keys.list) to log in with before any password."),
             )
         ) { p ->
             scenarios.run(p)

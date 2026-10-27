@@ -35,6 +35,7 @@ class Profiles(context: Context) {
                     .put("host", t.host)
                     .put("port", t.port)
                     .put("username", t.username)
+                    .put("key", t.keyId)
             )
         }
         prefs.edit().putString("list", arr.toString()).apply()
@@ -50,6 +51,7 @@ class Profiles(context: Context) {
                 port = o.optInt("port", 22),
                 username = o.getString("username"),
                 label = o.optString("label"),
+                keyId = o.optString("key"),
             )
         }
     }

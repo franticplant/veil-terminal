@@ -256,6 +256,7 @@ private fun HostsScreen(host: EngineHost, profiles: Profiles, onConnect: (Target
     var editing by remember { mutableStateOf<Target?>(null) }
     var adding by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(false) }
+    var keysOpen by remember { mutableStateOf(false) }
 
     Column(
         Modifier.fillMaxSize().padding(16.dp),
@@ -264,10 +265,12 @@ private fun HostsScreen(host: EngineHost, profiles: Profiles, onConnect: (Target
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Veil Terminal", style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.weight(1f))
+            TextButton(onClick = { keysOpen = true }) { Text("Keys") }
             TextButton(onClick = { settings = true }) { Text("Settings") }
             Button(onClick = { adding = true }) { Text("Add host") }
         }
         if (settings) SettingsDialog(host.uiPrefs) { settings = false }
+        if (keysOpen) KeysDialog(host.sshKeys) { keysOpen = false }
         val info = host.buildInfo
         Text(
             "${info.versionName} · engine: ${host.backendKind}" +
@@ -309,6 +312,7 @@ private fun HostsScreen(host: EngineHost, profiles: Profiles, onConnect: (Target
 
     if (adding || editing != null) {
         ProfileDialog(
+            keys = host.sshKeys,
             initial = editing,
             onSave = {
                 profiles.save(editing, it)
@@ -332,6 +336,7 @@ private fun HostsScreen(host: EngineHost, profiles: Profiles, onConnect: (Target
 
 @Composable
 private fun ProfileDialog(
+    keys: SshKeys,
     initial: Target?,
     onSave: (Target) -> Unit,
     onDelete: (() -> Unit)?,
@@ -341,6 +346,8 @@ private fun ProfileDialog(
     var hostName by remember { mutableStateOf(initial?.host ?: "") }
     var port by remember { mutableStateOf((initial?.port ?: 22).toString()) }
     var user by remember { mutableStateOf(initial?.username ?: "") }
+    var keyId by remember { mutableStateOf(initial?.keyId ?: "") }
+    val allKeys by keys.keys.collectAsState()
     val portNum = port.toIntOrNull()
     val valid =
         hostName.isNotBlank() &&
@@ -380,12 +387,36 @@ private fun ProfileDialog(
                     label = { Text("Username") },
                     singleLine = true,
                 )
+                Text("Key (tried before the password)", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    FilterChip(
+                        selected = keyId.isEmpty(),
+                        onClick = { keyId = "" },
+                        label = { Text("none") },
+                    )
+                    for (k in allKeys) {
+                        FilterChip(
+                            selected = keyId == k.name,
+                            onClick = { keyId = k.name },
+                            label = { Text(k.name) },
+                        )
+                    }
+                }
+                if (allKeys.isEmpty()) {
+                    Text(
+                        "No keys yet: create one under Keys.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
                 enabled = valid,
-                onClick = { onSave(Target(hostName, portNum!!, user, label.trim())) },
+                onClick = { onSave(Target(hostName, portNum!!, user, label.trim(), keyId)) },
             ) {
                 Text("Save")
             }
@@ -824,5 +855,115 @@ private fun SettingSwitch(label: String, on: Boolean, onChange: (Boolean) -> Uni
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(label, Modifier.weight(1f))
         Switch(checked = on, onCheckedChange = onChange)
+    }
+}
+
+/**
+ * SSH keys: create (StrongBox when the phone has it), copy the public key for authorized_keys,
+ * delete. Private keys never leave Android Keystore.
+ */
+@Composable
+private fun KeysDialog(keys: SshKeys, onDismiss: () -> Unit) {
+    val all by keys.keys.collectAsState()
+    val context = LocalContext.current
+    var name by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var deleting by remember { mutableStateOf<SshKeys.Key?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        title = { Text("Keys") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (all.isEmpty()) Text("No keys yet.")
+                for (k in all) {
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                k.name,
+                                Modifier.weight(1f),
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            Text(
+                                when (k.security) {
+                                    SshKeys.Security.STRONGBOX -> "StrongBox"
+                                    SshKeys.Security.TEE -> "TEE"
+                                    SshKeys.Security.SOFTWARE -> "software"
+                                    SshKeys.Security.UNKNOWN -> "?"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                        Text(k.fingerprint, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                        Row {
+                            TextButton(
+                                onClick = {
+                                    context
+                                        .getSystemService(ClipboardManager::class.java)
+                                        .setPrimaryClip(
+                                            ClipData.newPlainText("public key", k.publicKey)
+                                        )
+                                    Toast.makeText(context, "Public key copied", Toast.LENGTH_SHORT)
+                                        .show()
+                                }
+                            ) {
+                                Text("Copy public key")
+                            }
+                            TextButton(onClick = { deleting = k }) { Text("Delete") }
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    name,
+                    { name = it.trim() },
+                    label = { Text("New key name") },
+                    singleLine = true,
+                )
+                Button(
+                    enabled = name.isNotEmpty(),
+                    onClick = {
+                        error =
+                            try {
+                                keys.create(name)
+                                name = ""
+                                null
+                            } catch (e: Exception) {
+                                e.message
+                            }
+                    },
+                ) {
+                    Text("Create key")
+                }
+                error?.let { Text(it, color = Color(0xFFE06C75)) }
+                Text(
+                    "Put the public key in the server's ~/.ssh/authorized_keys, then choose the key " +
+                        "in the host's settings.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+    )
+    deleting?.let { k ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("Delete '${k.name}'?") },
+            text = {
+                Text("The private key is destroyed; servers that trust only it will refuse you.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        keys.delete(k.name)
+                        deleting = null
+                    }
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
+        )
     }
 }

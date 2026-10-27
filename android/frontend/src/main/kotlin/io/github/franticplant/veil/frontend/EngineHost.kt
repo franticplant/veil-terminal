@@ -12,6 +12,8 @@ interface EngineHost {
     val sessions: SessionRegistry
     /** Saved hosts, shared by every screen (and, in dev builds, the dev API). */
     val profiles: Profiles
+    /** SSH keys in Android Keystore; also the sessions' login signer. */
+    val sshKeys: SshKeys
     /** Terminal screen preferences, shared by every screen. */
     val uiPrefs: UiPrefs
     val buildInfo: BuildInfo
