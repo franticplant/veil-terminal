@@ -6,6 +6,7 @@ import io.github.franticplant.veil.dev.api.DevIds
 import io.github.franticplant.veil.dev.api.ErrorCode
 import io.github.franticplant.veil.dev.api.MethodSpec
 import io.github.franticplant.veil.dev.api.MethodTable
+import io.github.franticplant.veil.dev.api.ProcSelf
 import io.github.franticplant.veil.dev.api.Scope
 import io.github.franticplant.veil.dev.api.int
 import io.github.franticplant.veil.dev.api.long
@@ -201,6 +202,19 @@ class DevdMethods(private val app: DevdApp) {
                     )
                 }
             }
+        }
+
+        table.add(
+            method(
+                "devd.smaps",
+                Scope.READ,
+                "Where devd's memory lives: PSS by mapping (boot image, heap spaces, code, " +
+                    "native allocator), largest first.",
+                false,
+                int("top", "How many groups to return (default 40).", min = 1, max = 500),
+            )
+        ) { p ->
+            ProcSelf.smaps(p.intOr("top", 40))
         }
 
         table.add(method("metrics.keys", Scope.READ, "Names of the recorded time series.")) {
