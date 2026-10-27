@@ -9,6 +9,8 @@ rust-version.workspace = true
 publish = false
 
 [lib]
+# Loaded by Kotlin as System.loadLibrary("veil_devd").
+name = "veil_devd"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
