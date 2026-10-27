@@ -1,0 +1,20 @@
+[package]
+name = "veil-caps"
+description = "The authorities Veil components are handed (network dialing, host-key store) as traits with local implementations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+veil-protocol.workspace = true
+russh.workspace = true
+tokio = { workspace = true, features = ["net", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

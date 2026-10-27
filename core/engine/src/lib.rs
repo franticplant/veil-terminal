@@ -11,7 +11,6 @@
 //! engine handles blocks in `send`; an engine whose output is not read stops
 //! producing until `recv` drains it.
 
-mod hostkeys;
 mod session;
 mod ssh;
 
@@ -30,7 +29,7 @@ use veil_protocol::{
 };
 
 use session::{Answer, Command, Prompter, Prompts};
-pub use ssh::{Dialer, DirectDialer};
+pub use veil_caps::{Dialer, DirectDialer, FileHostKeys, HostKeyCheck, HostKeyStore, NoHostKeys};
 use veil_obs::{LogRing, SessionStats};
 
 /// Messages queued in each direction before the sender waits.
@@ -51,6 +50,9 @@ pub struct EngineConfig {
     pub data_dir: Option<PathBuf>,
     /// How sessions reach the network. None: [`DirectDialer`].
     pub dialer: Option<Arc<dyn Dialer>>,
+    /// Trusted host keys. None: [`FileHostKeys`] in `data_dir`, or
+    /// [`NoHostKeys`] without one.
+    pub host_keys: Option<Arc<dyn HostKeyStore>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -154,7 +156,15 @@ impl Connection {
                     timeout: Duration::from_secs(15),
                 })
             }),
-            known_hosts: config.data_dir.as_ref().map(|d| d.join("known_hosts")),
+            host_keys: config
+                .host_keys
+                .clone()
+                .unwrap_or_else(|| match &config.data_dir {
+                    Some(d) => Arc::new(FileHostKeys {
+                        path: d.join("known_hosts"),
+                    }),
+                    None => Arc::new(NoHostKeys),
+                }),
         });
         Connection {
             config,
@@ -337,18 +347,11 @@ impl Connection {
                 return reply(engine_msg::Body::LogBatch(self.log.read(&req)));
             }
             Some(client_msg::Body::ListHostKeys(_)) => {
-                let Some(path) = &self.env.known_hosts else {
-                    return reply(engine_msg::Body::HostKeyList(v1::HostKeyList::default()));
-                };
-                return match hostkeys::list(path) {
+                return match self.env.host_keys.list() {
                     Ok(entries) => {
                         reply(engine_msg::Body::HostKeyList(v1::HostKeyList { entries }))
                     }
-                    Err(e) => error_msg(
-                        id,
-                        v1::ErrorCode::Internal,
-                        format!("cannot read known_hosts: {e}"),
-                    ),
+                    Err(e) => error_msg(id, v1::ErrorCode::Internal, e),
                 };
             }
             Some(client_msg::Body::ForgetHostKey(f)) => self.forget_host_key(f),
@@ -473,10 +476,7 @@ impl Connection {
         if f.host.is_empty() || f.host.len() > 255 || f.host.chars().any(char::is_whitespace) {
             return Err((v1::ErrorCode::Invalid, "invalid host".into()));
         }
-        let Some(path) = &self.env.known_hosts else {
-            return Ok(());
-        };
-        match hostkeys::forget(path, &f.host, port) {
+        match self.env.host_keys.forget(&f.host, port) {
             Ok(n) => {
                 self.log.info(
                     "hostkeys",
@@ -485,10 +485,7 @@ impl Connection {
                 );
                 Ok(())
             }
-            Err(e) => Err((
-                v1::ErrorCode::Internal,
-                format!("cannot update known_hosts: {e}"),
-            )),
+            Err(e) => Err((v1::ErrorCode::Internal, e)),
         }
     }
 
@@ -543,6 +540,7 @@ mod tests {
             version: "test".into(),
             data_dir: None,
             dialer: None,
+            host_keys: None,
         })
         .unwrap()
     }

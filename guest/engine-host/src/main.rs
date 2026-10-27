@@ -39,6 +39,7 @@ fn main() -> ExitCode {
         version: format!("{} (engine-host)", env!("CARGO_PKG_VERSION")),
         data_dir,
         dialer: None,
+        host_keys: None,
     };
     let result = match mode {
         Some((m, _)) if m == "stdio" => {

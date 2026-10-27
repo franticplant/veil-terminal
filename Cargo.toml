@@ -4,6 +4,7 @@ members = [
     "core/protocol",
     "core/term",
     "core/obs",
+    "core/caps",
     "core/engine",
     "core/wire",
     "guest/engine-host",
@@ -26,6 +27,7 @@ veil-term = { path = "core/term" }
 veil-engine = { path = "core/engine" }
 veil-wire = { path = "core/wire" }
 veil-obs = { path = "core/obs" }
+veil-caps = { path = "core/caps" }
 
 prost = "0.14.4"
 prost-build = "0.14.4"

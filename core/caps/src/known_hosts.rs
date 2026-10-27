@@ -1,5 +1,5 @@
-//! Reading and editing the engine's known_hosts file. Checking and learning
-//! keys during a handshake is russh's (see `ssh.rs`); this is the listing and
+//! Listing and editing a known_hosts file. Checking and learning
+//! keys during a handshake is russh's (see [`crate::FileHostKeys`]); this is the listing and
 //! forgetting a frontend asks for.
 
 use std::io::{self, Write};
@@ -33,7 +33,7 @@ fn parse_pattern(p: &str) -> (String, u16) {
 
 /// Every key in the file. A missing file is an empty list; lines that do not
 /// parse are skipped.
-pub(crate) fn list(path: &Path) -> io::Result<Vec<v1::HostKeyEntry>> {
+pub fn list(path: &Path) -> io::Result<Vec<v1::HostKeyEntry>> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(vec![]),
@@ -69,7 +69,7 @@ pub(crate) fn list(path: &Path) -> io::Result<Vec<v1::HostKeyEntry>> {
 
 /// Removes host:port from every line; a line left with no hosts goes. The
 /// file is replaced atomically. Returns how many entries were removed.
-pub(crate) fn forget(path: &Path, host: &str, port: u16) -> io::Result<usize> {
+pub fn forget(path: &Path, host: &str, port: u16) -> io::Result<usize> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),

@@ -3,7 +3,6 @@
 //! frontend as credit allows.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,7 +12,8 @@ use tokio::sync::{mpsc, oneshot};
 use veil_protocol::{MAX_FRAMES_IN_FLIGHT, encode, v1};
 use veil_term::{TermEvent, Terminal};
 
-use crate::ssh::{self, Client, Dialer};
+use crate::ssh::{self, Client};
+use veil_caps::Dialer;
 use veil_obs::{LogRing, SessionStats};
 
 /// How long a prompt waits for the frontend before giving up.
@@ -140,7 +140,7 @@ pub(crate) struct Spec {
 
 pub(crate) struct Env {
     pub dialer: Arc<dyn Dialer>,
-    pub known_hosts: Option<PathBuf>,
+    pub host_keys: Arc<dyn veil_caps::HostKeyStore>,
 }
 
 /// Runs a session to completion and reports its end.
@@ -202,7 +202,7 @@ async fn run_inner(
         prompter: prompter.clone(),
         host: spec.host.clone(),
         port: spec.port,
-        known_hosts: env.known_hosts.clone(),
+        host_keys: env.host_keys.clone(),
         refusal: refusal.clone(),
     };
     let mut handle = match client::connect_stream(config, stream, handler).await {

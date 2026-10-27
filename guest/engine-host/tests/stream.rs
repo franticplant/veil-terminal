@@ -39,6 +39,7 @@ fn protocol_over_a_socket() {
                 version: "test".into(),
                 data_dir: None,
                 dialer: None,
+                host_keys: None,
             },
             reader,
             theirs,

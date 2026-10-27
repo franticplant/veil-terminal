@@ -204,6 +204,7 @@ impl Frontend {
             version: "test".into(),
             data_dir: Some(data_dir.to_path_buf()),
             dialer: None,
+            host_keys: None,
         })
         .unwrap();
         let mut f = Frontend {

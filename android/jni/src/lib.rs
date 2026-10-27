@@ -65,6 +65,7 @@ pub extern "system" fn Java_io_github_franticplant_veil_engine_NativeEngine_open
                 version,
                 data_dir: Some(data_dir.into()),
                 dialer: None,
+                host_keys: None,
             };
             let engine = match Engine::start(config) {
                 Ok(engine) => engine,

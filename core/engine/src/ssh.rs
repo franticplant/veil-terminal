@@ -3,62 +3,22 @@
 //! that needs a human decision goes through [`Prompter`].
 
 use std::future::Future;
-use std::io;
-use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use russh::client;
-use russh::keys::known_hosts::{check_known_hosts_path, learn_known_hosts_path};
 use russh::keys::{HashAlg, PublicKey, PublicKeyOrCertificate};
 use russh::{MethodKind, MethodSet};
-use tokio::net::TcpStream;
 use veil_protocol::v1;
 
 use crate::session::{Answer, Prompter, Spec};
-
-/// How the engine obtains a connected TCP stream. This is the network
-/// capability boundary: today [`DirectDialer`] connects from this process;
-/// later the Network Broker hands over one approved, already-connected socket
-/// and the engine never creates connections itself.
-pub trait Dialer: Send + Sync + 'static {
-    fn dial<'a>(
-        &'a self,
-        host: &'a str,
-        port: u16,
-    ) -> Pin<Box<dyn Future<Output = io::Result<TcpStream>> + Send + 'a>>;
-}
-
-/// Connects directly, with a timeout.
-pub struct DirectDialer {
-    pub timeout: Duration,
-}
-
-impl Dialer for DirectDialer {
-    fn dial<'a>(
-        &'a self,
-        host: &'a str,
-        port: u16,
-    ) -> Pin<Box<dyn Future<Output = io::Result<TcpStream>> + Send + 'a>> {
-        Box::pin(async move {
-            match tokio::time::timeout(self.timeout, TcpStream::connect((host, port))).await {
-                Ok(r) => r,
-                Err(_) => Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    format!("no connection within {:?}", self.timeout),
-                )),
-            }
-        })
-    }
-}
 
 /// russh's callback object: decides on the server's host key.
 pub(crate) struct Client {
     pub prompter: Arc<Prompter>,
     pub host: String,
     pub port: u16,
-    pub known_hosts: Option<PathBuf>,
+    /// Trusted host keys (a capability: the Android side in the VM layout).
+    pub host_keys: Arc<dyn veil_caps::HostKeyStore>,
     /// Why the key was refused, for the session's closing detail.
     pub refusal: Arc<Mutex<Option<String>>>,
     /// What the key exchange negotiated, once it is done.
@@ -139,29 +99,26 @@ impl client::Handler for Client {
             }
         };
         let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
-        if let Some(path) = &self.known_hosts {
-            match check_known_hosts_path(&self.host, self.port, key, path) {
-                Ok(true) => {
-                    self.prompter.log(
-                        v1::LogLevel::Debug,
-                        "hostkeys",
-                        &format!("known {} key {fingerprint}", key.algorithm()),
-                    );
-                    return Ok(true);
-                }
-                Ok(false) => {}
-                Err(russh::keys::Error::KeyChanged { line }) => {
-                    return self.refuse(format!(
-                        "HOST KEY CHANGED: {}:{} now presents {} {fingerprint}, which differs from the key \
-                         recorded on line {line} of known_hosts. This can mean an attack. Remove the old \
-                         key only if you know why it changed.",
-                        self.host,
-                        self.port,
-                        key.algorithm()
-                    ));
-                }
-                Err(e) => return self.refuse(format!("cannot read known_hosts: {e}")),
+        match self.host_keys.check(&self.host, self.port, key) {
+            Ok(veil_caps::HostKeyCheck::Known) => {
+                self.prompter.log(
+                    v1::LogLevel::Debug,
+                    "hostkeys",
+                    &format!("known {} key {fingerprint}", key.algorithm()),
+                );
+                return Ok(true);
             }
+            Ok(veil_caps::HostKeyCheck::Unknown) => {}
+            Ok(veil_caps::HostKeyCheck::Changed { detail }) => {
+                return self.refuse(format!(
+                    "HOST KEY CHANGED: {}:{} now presents {} {fingerprint}, which {detail}. This \
+                     can mean an attack. Remove the old key only if you know why it changed.",
+                    self.host,
+                    self.port,
+                    key.algorithm()
+                ));
+            }
+            Err(e) => return self.refuse(e),
         }
 
         self.prompter
@@ -191,10 +148,8 @@ impl client::Handler for Client {
                 Ok(true)
             }
             Some(Answer::HostKey(v1::HostKeyDecision::AcceptAndRemember)) => {
-                if let Some(path) = &self.known_hosts
-                    && let Err(e) = learn_known_hosts_path(&self.host, self.port, key, path)
-                {
-                    return self.refuse(format!("cannot record the host key: {e}"));
+                if let Err(e) = self.host_keys.learn(&self.host, self.port, key) {
+                    return self.refuse(e);
                 }
                 self.prompter.log(
                     v1::LogLevel::Info,
