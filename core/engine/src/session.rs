@@ -13,8 +13,8 @@ use tokio::sync::{mpsc, oneshot};
 use veil_protocol::{MAX_FRAMES_IN_FLIGHT, encode, v1};
 use veil_term::{TermEvent, Terminal};
 
-use crate::obs::{LogRing, SessionStats};
 use crate::ssh::{self, Client, Dialer};
+use veil_obs::{LogRing, SessionStats};
 
 /// How long a prompt waits for the frontend before giving up.
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(10 * 60);

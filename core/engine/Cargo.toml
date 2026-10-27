@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 veil-protocol.workspace = true
 veil-term.workspace = true
+veil-obs.workspace = true
 russh.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "net", "macros"] }
 thiserror.workspace = true

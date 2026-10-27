@@ -1,4 +1,9 @@
-//! Observability: the engine's log ring and per-session counters.
+//! Observability: a component's log ring and per-session counters.
+//!
+//! Every component, whether in the app, an Android broker or a Microdroid
+//! guest worker, reports into its own ring and exposes it through its
+//! protocol (the engine: GetLogs/GetStats). Inside a protected VM there is no
+//! logcat, so this is the only window in.
 //!
 //! Both are owned by one engine connection and handed to the code that
 //! reports into them; there is no global logger. The ring is bounded, so a
@@ -13,22 +18,28 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use veil_protocol::v1;
 
 /// Entries kept in the ring.
-pub(crate) const LOG_CAPACITY: usize = 4000;
+pub const LOG_CAPACITY: usize = 4000;
 
 /// The most entries one `GetLogs` returns.
-pub(crate) const MAX_LOG_BATCH: usize = 1000;
+pub const MAX_LOG_BATCH: usize = 1000;
 
 /// The longest message kept, in bytes; longer ones are cut at a character
 /// boundary.
 const MAX_MESSAGE_BYTES: usize = 1024;
 
-pub(crate) struct LogRing {
+pub struct LogRing {
     inner: Mutex<Ring>,
 }
 
 struct Ring {
     entries: VecDeque<v1::LogEntry>,
     next_seq: u64,
+}
+
+impl Default for LogRing {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LogRing {
@@ -117,7 +128,7 @@ impl LogRing {
 }
 
 /// Counters one session updates and `GetStats` reads, without locks.
-pub(crate) struct SessionStats {
+pub struct SessionStats {
     pub host: String,
     pub port: u16,
     pub user: String,

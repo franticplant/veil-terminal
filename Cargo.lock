@@ -2495,6 +2495,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "veil-obs",
  "veil-protocol",
  "veil-term",
 ]
@@ -2514,6 +2515,13 @@ version = "0.0.1"
 dependencies = [
  "jni",
  "veil-engine",
+]
+
+[[package]]
+name = "veil-obs"
+version = "0.0.1"
+dependencies = [
+ "veil-protocol",
 ]
 
 [[package]]

@@ -12,7 +12,6 @@
 //! producing until `recv` drains it.
 
 mod hostkeys;
-mod obs;
 mod session;
 mod ssh;
 
@@ -30,9 +29,9 @@ use veil_protocol::{
     MAX_INPUT_BYTES, MAX_SESSIONS, PROTOCOL_VERSION, check_size, decode_client, encode, error_msg,
 };
 
-use obs::{LogRing, SessionStats};
 use session::{Answer, Command, Prompter, Prompts};
 pub use ssh::{Dialer, DirectDialer};
+use veil_obs::{LogRing, SessionStats};
 
 /// Messages queued in each direction before the sender waits.
 const QUEUE_DEPTH: usize = 64;
