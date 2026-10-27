@@ -163,7 +163,8 @@ private fun VeilApp(host: EngineHost, profiles: Profiles) {
     fun connect(target: Target) {
         scope.launch {
             try {
-                val s = host.sessions.open(target, lastGrid.first, lastGrid.second)
+                val saved = profiles.touch(target)
+                val s = host.sessions.open(saved, lastGrid.first, lastGrid.second)
                 currentId = s.id
                 showHosts = false
             } catch (e: Exception) {
@@ -257,20 +258,50 @@ private fun HostsScreen(host: EngineHost, profiles: Profiles, onConnect: (Target
     var adding by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(false) }
     var keysOpen by remember { mutableStateOf(false) }
+    var knownHosts by remember { mutableStateOf(false) }
 
     Column(
         Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Veil Terminal", style = MaterialTheme.typography.headlineSmall)
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = { keysOpen = true }) { Text("Keys") }
-            TextButton(onClick = { settings = true }) { Text("Settings") }
+        Text("Veil Terminal", style = MaterialTheme.typography.headlineSmall)
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Button(onClick = { adding = true }) { Text("Add host") }
+            TextButton(onClick = { keysOpen = true }) { Text("Keys") }
+            TextButton(onClick = { knownHosts = true }) { Text("Known hosts") }
+            TextButton(onClick = { settings = true }) { Text("Settings") }
         }
         if (settings) SettingsDialog(host.uiPrefs) { settings = false }
         if (keysOpen) KeysDialog(host.sshKeys) { keysOpen = false }
+        if (knownHosts) KnownHostsDialog(host) { knownHosts = false }
+        // Quick connect: user@host[:port]; remembered as a profile.
+        var quick by remember { mutableStateOf("") }
+        val parsed = Profiles.parseQuick(quick)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                quick,
+                { quick = it },
+                label = { Text("user@host[:port]") },
+                singleLine = true,
+                isError = quick.isNotBlank() && parsed == null,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(
+                enabled = parsed != null,
+                onClick = {
+                    parsed?.let(onConnect)
+                    quick = ""
+                },
+            ) {
+                Text("Connect")
+            }
+        }
         val info = host.buildInfo
         Text(
             "${info.versionName} · engine: ${host.backendKind}" +
@@ -1003,4 +1034,73 @@ private fun KeysDialog(keys: SshKeys, onDismiss: () -> Unit) {
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
         )
     }
+}
+
+/** The engine's known_hosts: what is trusted, and forgetting a key that legitimately changed. */
+@Composable
+private fun KnownHostsDialog(host: EngineHost, onDismiss: () -> Unit) {
+    var entries by remember {
+        mutableStateOf<List<io.github.franticplant.veil.engine.proto.HostKeyEntry>?>(null)
+    }
+    var error by remember { mutableStateOf<String?>(null) }
+    var reload by remember { mutableStateOf(0) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(reload) {
+        try {
+            entries = host.sessions.hostKeys()
+            error = null
+        } catch (e: Exception) {
+            error = e.message
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        title = { Text("Known hosts") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                error?.let { Text(it, color = Color(0xFFE06C75)) }
+                val list = entries
+                when {
+                    list == null -> Text("Loading…")
+                    list.isEmpty() -> Text("No host keys recorded yet.")
+                    else ->
+                        for (k in list) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(if (k.port == 22) k.host else "${k.host}:${k.port}")
+                                    Text(
+                                        "${k.algorithm} ${k.fingerprint}",
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.sp,
+                                    )
+                                }
+                                TextButton(
+                                    onClick = {
+                                        scope.launch {
+                                            try {
+                                                host.sessions.forgetHostKey(k.host, k.port)
+                                            } catch (e: Exception) {
+                                                error = e.message
+                                            }
+                                            reload++
+                                        }
+                                    }
+                                ) {
+                                    Text("Forget")
+                                }
+                            }
+                        }
+                }
+                Text(
+                    "Forget a key only when you know why the server's key changed; Veil then asks again " +
+                        "on the next connection.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+    )
 }
