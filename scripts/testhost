@@ -4,6 +4,7 @@
 #   scripts/testhost start ADDRESS [PORT]   build if needed, start, set a new password
 #   scripts/testhost password               print the current password
 #   scripts/testhost stop
+#   (podman volume rm veil-testhost-keys gives it new host keys)
 #
 # It runs under gVisor (--runtime=runsc) when runsc is installed, else plain
 # crun (or always crun with VEIL_TESTHOST_RUNTIME=crun). It uses the host's
@@ -31,18 +32,24 @@ start)
 	image=localhost/veil-testhost:$tag
 	podman image exists "$image" || podman build -t "$image" "$repo/dev/testhost" >&2
 	podman rm -f "$name" > /dev/null 2>&1 || true
+	# Host keys live in a volume, so rebuilding the image does not change them (a changed key is,
+	# correctly, refused by Veil).
+	podman volume exists veil-testhost-keys || podman volume create veil-testhost-keys > /dev/null
+	podman run --rm --entrypoint sh -v veil-testhost-keys:/keys "$image" \
+		-c 'ls /keys/ssh_host_ed25519_key > /dev/null 2>&1 || cp -p /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub /keys/' > /dev/null
 	runtime=()
 	if [[ ${VEIL_TESTHOST_RUNTIME:-} != crun ]] && command -v runsc > /dev/null; then
 		# hostinet: gVisor uses the host's network directly, so sshd binds ADDRESS itself.
 		runtime=(--runtime=runsc --runtime-flag=ignore-cgroups --runtime-flag=network=host --security-opt label=disable)
 	fi
 	podman run -d --name "$name" "${runtime[@]}" --cap-drop=all \
-		--cap-add=SETUID,SETGID,CHOWN,SYS_CHROOT,AUDIT_WRITE,DAC_OVERRIDE,FOWNER \
-		--network=host "$image" -o "ListenAddress=$addr:$port" > /dev/null
+		--cap-add=SETUID,SETGID,CHOWN,SYS_CHROOT,AUDIT_WRITE,DAC_OVERRIDE,FOWNER,FSETID,KILL \
+		-v veil-testhost-keys:/keys:ro --network=host "$image" -o "ListenAddress=$addr:$port" \
+		-o HostKey=/keys/ssh_host_ed25519_key -o HostKey=/keys/ssh_host_ecdsa_key -o HostKey=/keys/ssh_host_rsa_key > /dev/null
 	mkdir -p "$state"
 	chmod 700 "$state"
 	(umask 077 && head -c 18 /dev/urandom | base64 | tr -d '/+=' > "$state/password")
-	printf 'tester:%s\n' "$(cat "$state/password")" | podman exec -i "$name" chpasswd
+	printf 'tester:%s\nroot:%s\n' "$(cat "$state/password")" "$(cat "$state/password")" | podman exec -i "$name" chpasswd
 	echo "test host on $addr:$port (runtime: ${runtime[0]:-crun}), user tester; password: $0 password" >&2
 	;;
 password)

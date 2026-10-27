@@ -1,11 +1,13 @@
 # A disposable SSH server for Veil's scenarios (scripts/testhost). Not a
 # hardened host: it exists to be connected to, under gVisor, on an address
-# you choose, with a password made up for each run.
+# you choose, with a password made up for each run. tester may sudo (with
+# that password) to install whatever a test needs.
 FROM docker.io/library/debian:trixie-slim@sha256:4876fdea29cac1a33a3195f1eb1952feb1fca7dd6dd00be3e2f1879cf20d34d2
 RUN apt-get update \
  && apt-get install -y --no-install-recommends openssh-server coreutils procps \
+    sudo htop curl ca-certificates less vim-tiny tmux \
  && rm -rf /var/lib/apt/lists/* \
- && useradd -m -s /bin/bash tester \
+ && useradd -m -s /bin/bash -G sudo tester \
  && mkdir -p /run/sshd \
  && ssh-keygen -A \
  && printf 'welcome to the veil test host\n' > /etc/motd
