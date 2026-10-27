@@ -61,7 +61,7 @@ enum class LogSource(val label: String) {
 }
 
 /** Entries kept in memory per source; older ones fall off the top. */
-private const val KEEP = 4000
+private const val KEEP = 1500
 
 private object Palette {
     val bg = Color(0xFF111318)

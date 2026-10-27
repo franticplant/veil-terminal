@@ -16,7 +16,31 @@ import org.json.JSONObject
  * "net.inBps", "session.3.inBps". Rates (CPU %, bytes per second) come from deltas between samples.
  */
 class Metrics(private val app: DevdApp) {
-    private val series = LinkedHashMap<String, ArrayDeque<Pair<Long, Double>>>()
+    /** A fixed-size ring of (time, value) points in primitive arrays: no boxing per point. */
+    private class Ring {
+        val t = LongArray(KEEP)
+        val v = DoubleArray(KEEP)
+        var start = 0
+        var size = 0
+
+        fun add(time: Long, value: Double) {
+            val i = (start + size) % KEEP
+            t[i] = time
+            v[i] = value
+            if (size < KEEP) size++ else start = (start + 1) % KEEP
+        }
+
+        fun last(): Double? = if (size == 0) null else v[(start + size - 1) % KEEP]
+
+        inline fun forEach(sinceMs: Long, f: (Long, Double) -> Unit) {
+            for (k in 0 until size) {
+                val i = (start + k) % KEEP
+                if (t[i] >= sinceMs) f(t[i], v[i])
+            }
+        }
+    }
+
+    private val series = LinkedHashMap<String, Ring>()
     private var previous: Sample? = null
     private val _latest = MutableStateFlow<JSONObject?>(null)
     private val _version = MutableStateFlow(0L)
@@ -114,7 +138,7 @@ class Metrics(private val app: DevdApp) {
                         add("$name.cpuPct", now, ((c - before).coerceAtLeast(0) * 100.0 / dt))
                     }
                 }
-                p.put("cpuPct", series["$name.cpuPct"]?.lastOrNull()?.second ?: JSONObject.NULL)
+                p.put("cpuPct", series["$name.cpuPct"]?.last() ?: JSONObject.NULL)
             }
             var inTotal = 0L
             var outTotal = 0L
@@ -153,9 +177,7 @@ class Metrics(private val app: DevdApp) {
     }
 
     private fun add(key: String, t: Long, v: Double) {
-        val s = series.getOrPut(key) { ArrayDeque(KEEP) }
-        if (s.size == KEEP) s.removeFirst()
-        s.addLast(t to v)
+        series.getOrPut(key) { Ring() }.add(t, v)
     }
 
     /** Names of all series. */
@@ -163,7 +185,11 @@ class Metrics(private val app: DevdApp) {
 
     /** Points of [key] since [sinceMs], oldest first. */
     fun points(key: String, sinceMs: Long = 0): List<Pair<Long, Double>> =
-        synchronized(series) { series[key]?.filter { it.first >= sinceMs }.orEmpty() }
+        synchronized(series) {
+            val out = ArrayList<Pair<Long, Double>>()
+            series[key]?.forEach(sinceMs) { t, v -> out.add(t to v) }
+            out
+        }
 
     /** For the API: the series matching [prefixes] (all if empty) since [sinceMs]. */
     fun history(prefixes: List<String>, sinceMs: Long): JSONObject =
@@ -172,7 +198,7 @@ class Metrics(private val app: DevdApp) {
             for ((k, s) in series) {
                 if (prefixes.isNotEmpty() && prefixes.none { k.startsWith(it) }) continue
                 val arr = JSONArray()
-                for ((t, v) in s) if (t >= sinceMs) arr.put(JSONArray().put(t).put(v))
+                s.forEach(sinceMs) { t, v -> arr.put(JSONArray().put(t).put(v)) }
                 out.put(k, arr)
             }
             JSONObject().put("intervalMs", INTERVAL_MS).put("series", out)

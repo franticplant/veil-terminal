@@ -98,18 +98,21 @@ class Journal(
      * The newest [max] entries passing [filter], oldest first (for a viewer opening at the end).
      */
     fun tail(max: Int, filter: (JSONObject) -> Boolean = { true }): JSONArray {
-        val ring = ArrayDeque<JSONObject>(max)
-        for (f in segments()) {
-            f.bufferedReader().useLines { lines ->
-                for (line in lines) {
-                    val e = parse(line) ?: continue
-                    if (!filter(e)) continue
-                    if (ring.size == max) ring.removeFirst()
-                    ring.addLast(e)
-                }
+        // Newest segment first, each read backwards, stopping once [max] entries passed the
+        // filter: memory stays proportional to [max], not to the journal.
+        val picked = ArrayList<JSONObject>(max)
+        for (f in segments().asReversed()) {
+            val lines = f.readLines()
+            for (k in lines.indices.reversed()) {
+                val e = parse(lines[k]) ?: continue
+                if (!filter(e)) continue
+                picked.add(e)
+                if (picked.size == max) break
             }
+            if (picked.size == max) break
         }
-        return JSONArray(ring.toList())
+        picked.reverse()
+        return JSONArray(picked)
     }
 
     /** Walks the whole chain. Reports the first break, if any. */
