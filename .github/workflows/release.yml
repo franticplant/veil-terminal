@@ -1,0 +1,222 @@
+# Builds the signed prod APK from a v* tag, attests it (SLSA build provenance
+# and an SPDX SBOM, via Sigstore) and publishes it as a GitHub release. Anyone
+# can check a download with:
+#   gh attestation verify <file> -R franticplant/veil-terminal
+#   sha256sum -c SHA256SUMS
+#
+# Only the prod APK is published. Dev Veil and devd are development tools: CI
+# signs them for pushes to main (ci.yml) and keeps them as workflow artifacts,
+# never as release assets.
+#
+# Triggered by pushing a tag like v0.1.0, or manually for an existing tag.
+# Tags with a suffix (v0.1.0-rc1) and every v0.x release are pre-releases.
+# The versionName is the tag without its "v"; scripts/build refuses a dirty
+# tree or a HEAD other than the tag's commit.
+#
+# Secrets live in the "release" environment, which only admits main and v*
+# tags; v* tags are immutable (repository ruleset). scripts/sign checks the
+# signing certificate against dev/signing/veil-release-cert.sha256, and the
+# publish job checks it again, independently, before anything is published.
+#
+# Release notes come from docs/release-notes/<tag>.md at the tag; without it,
+# GitHub's generated notes are used. Build details are appended either way.
+#
+# Reproducibility (a second runner rebuilding and comparing byte for byte, as
+# in Tailmesh) is not here yet; see docs/design/0004-release-pipeline.md.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish (e.g. v0.1.0)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  # Plain directories instead of podman volumes. A release starts from empty
+  # caches: nothing from earlier runs goes into what we ship.
+  VEIL_CACHE_DIR: ${{ github.workspace }}/../veil-cache
+
+jobs:
+  build:
+    name: Build, sign and attest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # Sigstore signing certificate for attestations
+      attestations: write
+    outputs:
+      sha: ${{ steps.head.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          # scripts/build checks HEAD against the tag.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # From the pristine checkout, before any build output exists: Cargo.lock
+      # and the Gradle build scripts.
+      - name: Generate SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          format: spdx-json
+          output-file: ${{ runner.temp }}/sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - id: head
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/build-image
+
+      - name: Rust tests
+        run: scripts/podman-run cargo test --workspace --locked
+      - name: Dependency licenses and advisories
+        run: scripts/podman-run cargo deny --locked check
+
+      - name: Build prod APK (unsigned)
+        env:
+          VEIL_RELEASE_TAG: ${{ env.TAG }}
+        run: scripts/build prod
+      - name: Release check (no dev pieces)
+        run: scripts/podman-run --offline scripts/check-release-apk.sh android/app/build/outputs/apk/prod/release/app-prod-release-unsigned.apk
+
+      # scripts/sign checks the pinned certificate digest and runs the release
+      # check again on the signed APK.
+      - name: Sign
+        env:
+          VEIL_KEYSTORE_BASE64: ${{ secrets.VEIL_KEYSTORE_BASE64 }}
+          VEIL_KEYSTORE_PASSWORD: ${{ secrets.VEIL_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$VEIL_KEYSTORE_BASE64" ]; then
+            echo "::error::VEIL_KEYSTORE_BASE64 is not set in the release environment"
+            exit 1
+          fi
+          export VEIL_KEYSTORE="$RUNNER_TEMP/veil-release.p12"
+          umask 077
+          printf '%s' "$VEIL_KEYSTORE_BASE64" | base64 -d > "$VEIL_KEYSTORE"
+          scripts/sign prod
+      - name: Remove keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/veil-release.p12"
+
+      - name: Checksums
+        run: |
+          cp "$RUNNER_TEMP/sbom.spdx.json" "dist/veil-$TAG.spdx.json"
+          (cd dist && sha256sum * | grep -v SHA256SUMS > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Attest SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+          sbom-path: dist/veil-${{ env.TAG }}.spdx.json
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ env.TAG }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Verify and publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          sparse-checkout: |
+            docs/release-notes
+            dev/signing
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-${{ env.TAG }}
+          path: dist
+
+      # The artifact round trip must not have changed anything that was
+      # attested, and every file must carry this workflow's attestation.
+      - name: Verify checksums and attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && sha256sum -c SHA256SUMS)
+          for f in dist/*; do
+            [[ $(basename "$f") == SHA256SUMS ]] && continue
+            gh attestation verify "$f" -R "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" > /dev/null
+            echo "verified: $f"
+          done
+
+      # Independent of scripts/sign: the runner's own apksigner, the digest
+      # from the tag's dev/signing.
+      - name: Verify the signing certificate
+        run: |
+          expected=$(tr -d '[:space:]' < dev/signing/veil-release-cert.sha256)
+          apksigner="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner"
+          for apk in dist/*.apk; do
+            got=$("$apksigner" verify --print-certs "$apk" | grep -m1 'certificate SHA-256 digest' | awk '{print $NF}')
+            echo "$apk: $got"
+            if [[ "${got,,}" != "${expected,,}" ]]; then
+              echo "::error::$apk is signed by $got, expected $expected"
+              exit 1
+            fi
+          done
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_SHA: ${{ needs.build.outputs.sha }}
+        run: |
+          prerelease=""
+          if [[ "$TAG" == *-* || "$TAG" == v0.* ]]; then prerelease="--prerelease"; fi
+          notes="$RUNNER_TEMP/notes.md"
+          if [[ -f "docs/release-notes/$TAG.md" ]]; then
+            cp "docs/release-notes/$TAG.md" "$notes"
+            generate=""
+          else
+            : > "$notes"
+            generate="--generate-notes"
+          fi
+          cert=$(tr -d '[:space:]' < dev/signing/veil-release-cert.sha256)
+          {
+            echo
+            echo "---"
+            echo "Built by [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) from \`$BUILD_SHA\`."
+            echo
+            echo "Signing certificate SHA-256: \`$cert\`"
+            echo
+            echo "Verify a download: \`gh attestation verify <file> -R $GITHUB_REPOSITORY\` and \`sha256sum -c SHA256SUMS\`."
+          } >> "$notes"
+          # Created with all assets at once, so it works with immutable releases.
+          gh release create "$TAG" dist/* --verify-tag --title "Veil $TAG" \
+            --notes-file "$notes" $generate $prerelease

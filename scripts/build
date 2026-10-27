@@ -32,6 +32,16 @@ sha=$(git -C "$repo" rev-parse --short=7 HEAD)
 dirty=$(git -C "$repo" diff --quiet HEAD -- && echo || echo -dirty)
 export VEIL_VERSION_CODE=$((commit_time / 60 * 10))
 export VEIL_VERSION_NAME=$base-g$sha$dirty
+# A release (VEIL_RELEASE_TAG=v1.2.3, set by release.yml) is named after its
+# tag, and only builds from a clean tree at exactly that tag's commit.
+if [[ -n ${VEIL_RELEASE_TAG:-} ]]; then
+	[[ $VEIL_RELEASE_TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] ||
+		{ echo "release tag $VEIL_RELEASE_TAG is not vMAJOR.MINOR.PATCH[-suffix]" >&2; exit 1; }
+	[[ -z $dirty ]] || { echo "refusing a release build from a dirty tree" >&2; exit 1; }
+	[[ $(git -C "$repo" rev-parse "refs/tags/$VEIL_RELEASE_TAG^{commit}") == $(git -C "$repo" rev-parse HEAD) ]] ||
+		{ echo "HEAD is not the commit of $VEIL_RELEASE_TAG" >&2; exit 1; }
+	export VEIL_VERSION_NAME=${VEIL_RELEASE_TAG#v}
+fi
 echo "versionCode $VEIL_VERSION_CODE, versionName $VEIL_VERSION_NAME" >&2
 
 exec "$repo/scripts/podman-run" ./android/gradlew -p android --console=plain "${tasks[@]}" "$@"
