@@ -2,8 +2,10 @@ package io.github.franticplant.veil
 
 import android.app.Application
 import io.github.franticplant.veil.engine.EngineBackend
+import io.github.franticplant.veil.engine.HostBackend
 import io.github.franticplant.veil.engine.LocalBackend
 import io.github.franticplant.veil.engine.LogRing
+import io.github.franticplant.veil.engine.ProcessBackend
 import io.github.franticplant.veil.engine.SessionRegistry
 import io.github.franticplant.veil.frontend.BuildInfo
 import io.github.franticplant.veil.frontend.EngineHost
@@ -32,18 +34,17 @@ class VeilApplication : Application(), EngineHost {
         )
 
     /**
-     * Where the engine runs, chosen at start from the settings: in this process (JNI), or in the
-     * `:engine` process over a socket. Changing it applies at the next start.
+     * Where the engine runs, chosen at start from the settings: a native process of its own
+     * (veil-engine-host), the `:engine` Java process, or this process through JNI. All three serve
+     * the same protocol from the same engine state directory. Changing it applies at the next
+     * start.
      */
     private val backend: EngineBackend by lazy {
-        if (uiPrefs.values.value.engineProcess) {
-            io.github.franticplant.veil.engine.ProcessBackend(
-                this,
-                BuildConfig.VERSION_NAME,
-                File(filesDir, "engine"),
-            )
-        } else {
-            LocalBackend(BuildConfig.VERSION_NAME, File(filesDir, "engine"))
+        val dir = File(filesDir, "engine")
+        when (uiPrefs.values.value.engine) {
+            UiPrefs.EnginePlace.NATIVE -> HostBackend(this, BuildConfig.VERSION_NAME, dir)
+            UiPrefs.EnginePlace.SERVICE -> ProcessBackend(this, BuildConfig.VERSION_NAME, dir)
+            UiPrefs.EnginePlace.LOCAL -> LocalBackend(BuildConfig.VERSION_NAME, dir)
         }
     }
 

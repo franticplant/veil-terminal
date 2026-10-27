@@ -910,7 +910,7 @@ class AppMethods(private val app: VeilApplication) {
                 .put("bellVibrate", v.bellVibrate)
                 .put("bellFlash", v.bellFlash)
                 .put("keysWhileUnlocked", v.keysWhileUnlocked)
-                .put("engineProcess", v.engineProcess)
+                .put("engine", v.engine.name.lowercase())
 
         table.add(method("settings.get", Scope.READ, "The app's settings.")) {
             json(app.uiPrefs.values.value)
@@ -919,7 +919,7 @@ class AppMethods(private val app: VeilApplication) {
             method(
                 "settings.set",
                 Scope.OPERATE,
-                "Changes settings; only the parameters given. engineProcess applies at the next start " +
+                "Changes settings; only the parameters given. engine applies at the next start " +
                     "(app.restart).",
                 true,
                 str(
@@ -940,7 +940,12 @@ class AppMethods(private val app: VeilApplication) {
                 bool("bellVibrate", "Vibrate on bell."),
                 bool("bellFlash", "Flash on bell."),
                 bool("keysWhileUnlocked", "New keys usable only while unlocked."),
-                bool("engineProcess", "Run the engine in its own process (next start)."),
+                str(
+                    "engine",
+                    "Where the engine runs (next start): a native process, a Java service " +
+                        "process, or inside the app.",
+                    choices = listOf("native", "service", "local"),
+                ),
             )
         ) { p ->
             app.uiPrefs.update { v ->
@@ -960,7 +965,12 @@ class AppMethods(private val app: VeilApplication) {
                     bellVibrate = p.boolOr("bellVibrate", v.bellVibrate),
                     bellFlash = p.boolOr("bellFlash", v.bellFlash),
                     keysWhileUnlocked = p.boolOr("keysWhileUnlocked", v.keysWhileUnlocked),
-                    engineProcess = p.boolOr("engineProcess", v.engineProcess),
+                    engine =
+                        if (p.has("engine"))
+                            io.github.franticplant.veil.frontend.UiPrefs.EnginePlace.valueOf(
+                                p.string("engine").uppercase()
+                            )
+                        else v.engine,
                 )
             }
             json(app.uiPrefs.values.value)

@@ -998,12 +998,18 @@ private fun SettingsDialog(prefs: UiPrefs, onDismiss: () -> Unit) {
                     prefs.update { it.copy(bellFlash = on) }
                 }
                 Text("Engine", style = MaterialTheme.typography.labelLarge)
-                SettingSwitch("Run the engine in its own process", ui.engineProcess) { on ->
-                    prefs.update { it.copy(engineProcess = on) }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (e in UiPrefs.EnginePlace.entries) {
+                        FilterChip(
+                            selected = ui.engine == e,
+                            onClick = { prefs.update { it.copy(engine = e) } },
+                            label = { Text(e.label) },
+                        )
+                    }
                 }
                 Text(
-                    "Takes effect the next time Veil starts. Sessions survive the UI either way; in " +
-                        "its own process the engine also crashes alone.",
+                    "Takes effect the next time Veil starts. Native: a process of its own without a " +
+                        "JVM, the lightest. Service: a Java process of its own. In app: inside Veil.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Text("Keys", style = MaterialTheme.typography.labelLarge)

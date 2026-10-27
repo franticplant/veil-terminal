@@ -1,6 +1,6 @@
 //! `veil-engine-host`: the engine in a process of its own.
 //!
-//!   veil-engine-host --data-dir DIR --stdio
+//!   veil-engine-host [--version NAME] --data-dir DIR --stdio
 //!   veil-engine-host --data-dir DIR --unix PATH     (one connection at a time)
 //!
 //! Frames on the stream are `veil-wire` frames of engine protocol messages.
@@ -15,12 +15,19 @@ use veil_engine::EngineConfig;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut data_dir: Option<PathBuf> = None;
+    let mut version = format!("{} (engine-host)", env!("CARGO_PKG_VERSION"));
     let mut mode: Option<(String, Option<String>)> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--data-dir" => {
                 data_dir = args.get(i + 1).map(PathBuf::from);
+                i += 1;
+            }
+            "--version" => {
+                if let Some(v) = args.get(i + 1) {
+                    version = v.clone();
+                }
                 i += 1;
             }
             "--stdio" => mode = Some(("stdio".into(), None)),
@@ -36,7 +43,7 @@ fn main() -> ExitCode {
         i += 1;
     }
     let config = EngineConfig {
-        version: format!("{} (engine-host)", env!("CARGO_PKG_VERSION")),
+        version,
         data_dir,
         dialer: None,
         host_keys: None,
@@ -69,7 +76,9 @@ fn main() -> ExitCode {
             }
         }
         _ => {
-            eprintln!("usage: veil-engine-host [--data-dir DIR] --stdio | --unix PATH");
+            eprintln!(
+                "usage: veil-engine-host [--version NAME] [--data-dir DIR] --stdio | --unix PATH"
+            );
             return ExitCode::from(2);
         }
     };

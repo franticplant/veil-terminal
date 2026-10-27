@@ -101,6 +101,11 @@ for apk in "$@"; do
 	else
 		bad "libveil_jni.so for arm64-v8a is missing"
 	fi
+	if grep -q 'lib/arm64-v8a/libveil_engine_host.so' <<< "$listing"; then
+		ok "engine host for arm64-v8a"
+	else
+		bad "the engine host (libveil_engine_host.so) for arm64-v8a is missing"
+	fi
 	# Every ABI the APK has native code for must include the engine, or the
 	# app would install on a device where it cannot start.
 	for abi in $(grep -oE 'lib/[^/]+/' <<< "$listing" | sort -u | cut -d/ -f2); do

@@ -10,6 +10,16 @@ class UiPrefs(context: Context) {
     private val prefs = context.getSharedPreferences("ui", Context.MODE_PRIVATE)
 
     /** What to do when a remote offers text for the clipboard (OSC 52). */
+    /** Where the engine runs; see the backends in engine-client. */
+    enum class EnginePlace(val label: String) {
+        /** veil-engine-host, a native process without a JVM (HostBackend). */
+        NATIVE("Native"),
+        /** The `:engine` Java process (ProcessBackend). */
+        SERVICE("Service"),
+        /** Inside the app process, through JNI (LocalBackend). */
+        LOCAL("In app"),
+    }
+
     enum class ClipboardPolicy {
         ASK,
         ALLOW,
@@ -32,8 +42,8 @@ class UiPrefs(context: Context) {
         val bellFlash: Boolean = true,
         /** The default for new keys: usable only while the phone is unlocked. */
         val keysWhileUnlocked: Boolean = true,
-        /** Run the engine in its own process (applies at the next start). */
-        val engineProcess: Boolean = false,
+        /** Where the engine runs (applies at the next start). */
+        val engine: EnginePlace = EnginePlace.NATIVE,
     )
 
     private val _values =
@@ -52,7 +62,9 @@ class UiPrefs(context: Context) {
                 bellVibrate = prefs.getBoolean("bellVibrate", true),
                 bellFlash = prefs.getBoolean("bellFlash", true),
                 keysWhileUnlocked = prefs.getBoolean("keysWhileUnlocked", true),
-                engineProcess = prefs.getBoolean("engineProcess", false),
+                engine =
+                    runCatching { EnginePlace.valueOf(prefs.getString("engine", "NATIVE")!!) }
+                        .getOrDefault(EnginePlace.NATIVE),
             )
         )
 
@@ -72,7 +84,7 @@ class UiPrefs(context: Context) {
             putBoolean("bellVibrate", v.bellVibrate)
             putBoolean("bellFlash", v.bellFlash)
             putBoolean("keysWhileUnlocked", v.keysWhileUnlocked)
-            putBoolean("engineProcess", v.engineProcess)
+            putString("engine", v.engine.name)
         }
         _values.value = v
     }

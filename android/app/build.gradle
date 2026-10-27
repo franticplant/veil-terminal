@@ -14,6 +14,14 @@ android {
     namespace = 'io.github.franticplant.veil'
     compileSdk = 37
 
+    // Native libraries are extracted at install: the engine host (libveil_engine_host.so) is an
+    // executable, and Android can only run it from the extracted native library directory.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     defaultConfig {
         // Permanent: the package identity every build, dev or release, shares.
         applicationId = 'io.github.franticplant.veil'

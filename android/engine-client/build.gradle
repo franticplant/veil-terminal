@@ -18,7 +18,10 @@ protobuf {
 }
 
 // The native engine (android/jni, crate veil-jni) is built by cargo-ndk into
-// build/rustJniLibs/<abi>/libveil_jni.so and packaged from there.
+// build/rustJniLibs/<abi>/libveil_jni.so and packaged from there. The engine as a
+// process of its own (guest/engine-host, an executable) is copied in beside it as
+// libveil_engine_host.so: Android only installs lib*.so files from an APK, and the
+// native library directory is the one place an app may execute files from.
 // -PrustAbis=arm64-v8a limits it to one ABI for a faster local build.
 def rustAbis = (findProperty('rustAbis') ?: 'arm64-v8a,x86_64').toString().split(',')
 def rustOut = layout.buildDirectory.dir('rustJniLibs')
@@ -26,19 +29,29 @@ def repoRoot = rootProject.file('..')
 
 def cargoNdk = tasks.register('cargoNdk', Exec) {
     group = 'build'
-    description = 'Builds libveil_jni.so for each Android ABI with cargo-ndk.'
+    description = 'Builds libveil_jni.so and the engine host for each Android ABI with cargo-ndk.'
     workingDir = repoRoot
     def args = ['cargo', 'ndk', '--platform', '34']
     rustAbis.each { args += ['-t', it] }
-    args += ['-o', rustOut.get().asFile.path, 'build', '--release', '--locked', '-p', 'veil-jni']
+    args += ['-o', rustOut.get().asFile.path, 'build', '--release', '--locked', '-p', 'veil-jni', '-p', 'veil-engine-host']
     commandLine args
     inputs.files(fileTree(repoRoot) {
         include 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'
-        include 'core/**', 'android/jni/**', 'proto/**'
+        include 'core/**', 'android/jni/**', 'guest/**', 'proto/**'
         exclude '**/target/**'
     })
     inputs.property('abis', rustAbis.toList())
     outputs.dir(rustOut)
+    def triples = ['arm64-v8a': 'aarch64-linux-android', 'x86_64': 'x86_64-linux-android']
+    def targetDir = System.getenv('CARGO_TARGET_DIR') ?: new File(repoRoot, 'target').path
+    doLast {
+        rustAbis.each { abi ->
+            def bin = new File(targetDir, "${triples[abi]}/release/veil-engine-host")
+            def out = rustOut.get().dir(abi).file('libveil_engine_host.so').asFile
+            out.bytes = bin.bytes
+            out.setExecutable(true)
+        }
+    }
 }
 
 android {
