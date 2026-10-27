@@ -759,10 +759,20 @@ class AppMethods(private val app: VeilApplication) {
                 true,
                 str("name", "1-40 letters, digits, '.', '_' or '-'.", required = true),
                 bool("strongBox", "Ask for StrongBox (default true; falls back to the TEE)."),
+                bool(
+                    "whileUnlocked",
+                    "Keystore refuses to use it while the phone is locked (default true).",
+                ),
             )
         ) { p ->
             try {
-                json(app.sshKeys.create(p.string("name"), p.boolOr("strongBox", true)))
+                json(
+                    app.sshKeys.create(
+                        p.string("name"),
+                        p.boolOr("strongBox", true),
+                        p.boolOr("whileUnlocked", true),
+                    )
+                )
             } catch (e: IllegalArgumentException) {
                 throw ApiException(ErrorCode.INVALID_PARAMS, e.message ?: "invalid")
             }

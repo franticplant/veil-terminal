@@ -234,7 +234,12 @@ private fun SessionTabs(
             FilterChip(
                 selected = s === current,
                 onClick = { onSelect(s) },
-                label = { Text(s.target.displayName, maxLines = 1) },
+                label = {
+                    // The remote's title (sanitized by the engine), else where the session goes.
+                    val v by s.screenVersion.collectAsState()
+                    val title = remember(v) { synchronized(s.screen) { s.screen.title } }
+                    Text(title.ifBlank { s.target.displayName }.take(32), maxLines = 1)
+                },
                 leadingIcon = {
                     val color =
                         when (status.phase) {
@@ -482,6 +487,8 @@ private fun TerminalScreen(
     var selecting by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(false) }
     if (settings) SettingsDialog(prefs) { settings = false }
+
+    LaunchedEffect(session) { session.bell.collect { view?.bell() } }
 
     // Clipboard offers from the remote (OSC 52), under the user's policy.
     LaunchedEffect(session) {
@@ -937,6 +944,7 @@ private fun KeysDialog(keys: SshKeys, onDismiss: () -> Unit) {
     var name by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var deleting by remember { mutableStateOf<SshKeys.Key?>(null) }
+    var whileUnlocked by remember { mutableStateOf(true) }
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
@@ -990,12 +998,15 @@ private fun KeysDialog(keys: SshKeys, onDismiss: () -> Unit) {
                     label = { Text("New key name") },
                     singleLine = true,
                 )
+                SettingSwitch("Usable only while the phone is unlocked", whileUnlocked) {
+                    whileUnlocked = it
+                }
                 Button(
                     enabled = name.isNotEmpty(),
                     onClick = {
                         error =
                             try {
-                                keys.create(name)
+                                keys.create(name, whileUnlocked = whileUnlocked)
                                 name = ""
                                 null
                             } catch (e: Exception) {

@@ -49,8 +49,11 @@ class SshKeys(private val log: LogRing) : LoginSigner {
 
     val keys: StateFlow<List<Key>> = _keys
 
-    /** Creates a key; StrongBox if [strongBox] and the device has one. */
-    fun create(name: String, strongBox: Boolean = true): Key {
+    /**
+     * Creates a key; StrongBox if [strongBox] and the device has one. With [whileUnlocked],
+     * Keystore itself refuses to use the key while the phone is locked.
+     */
+    fun create(name: String, strongBox: Boolean = true, whileUnlocked: Boolean = true): Key {
         require(NAME.matches(name)) { "a key name is 1-40 letters, digits, '.', '_' or '-'" }
         require(!ks.containsAlias(alias(name))) { "a key named '$name' exists" }
         fun generate(sb: Boolean) {
@@ -61,6 +64,7 @@ class SshKeys(private val log: LogRing) : LoginSigner {
                             .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
                             .setDigests(KeyProperties.DIGEST_SHA256)
                             .setIsStrongBoxBacked(sb)
+                            .setUnlockedDeviceRequired(whileUnlocked)
                             .build()
                     )
                 }

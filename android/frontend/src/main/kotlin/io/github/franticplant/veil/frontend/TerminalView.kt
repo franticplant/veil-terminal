@@ -162,6 +162,13 @@ class TerminalView(context: Context) : View(context) {
         }
         drawSelection(canvas)
         drawCursor(canvas, screen)
+        if (flashUntil > android.os.SystemClock.uptimeMillis()) {
+            bgPaint.color = palette.fg
+            bgPaint.alpha = 40
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
+            bgPaint.alpha = 255
+            postInvalidateDelayed(BELL_FLASH_MS)
+        }
     }
 
     /** Each character at its own cell, so fallback glyphs of other widths cannot drift. */
@@ -467,6 +474,21 @@ class TerminalView(context: Context) : View(context) {
         return super.onGenericMotionEvent(e)
     }
 
+    // ---- Bell ---------------------------------------------------------------
+
+    private var flashUntil = 0L
+    private var lastBell = 0L
+
+    /** A visual flash and a short vibration; repeated bells within a second are ignored. */
+    fun bell() {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastBell < 1000) return
+        lastBell = now
+        flashUntil = now + BELL_FLASH_MS
+        performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
+        invalidate()
+    }
+
     // ---- Selection ----------------------------------------------------------
 
     /** Called when a selection appears (true) or goes away (false). */
@@ -695,6 +717,7 @@ class TerminalView(context: Context) : View(context) {
     }
 
     companion object {
+        private const val BELL_FLASH_MS = 120L
         private val WORD_STOPS =
             setOf("(", ")", "[", "]", "{", "}", "<", ">", "\"", "'", "`", "|", ",", ";", "=")
     }
