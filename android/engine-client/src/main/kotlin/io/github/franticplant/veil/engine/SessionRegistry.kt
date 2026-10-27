@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -44,6 +45,10 @@ data class Target(
     val username: String,
     val label: String = "",
     val keyId: String = "",
+    /** Typed once the shell is open, e.g. "tmux new -A -s main"; empty for none. */
+    val startup: String = "",
+    /** Reconnect when the connection drops (not when closed by the user or the shell exits). */
+    val autoReconnect: Boolean = false,
 ) {
     val displayName: String
         get() = label.ifEmpty { if (port == 22) "$username@$host" else "$username@$host:$port" }
@@ -154,8 +159,57 @@ class SessionRegistry(
     /** The session with [id], if this registry knows it. */
     fun get(id: Long): Session? = byId[id]
 
-    /** Opens a session to [target] with a [cols] x [rows] terminal. */
+    private val _replaced = MutableSharedFlow<Pair<Long, Long>>(extraBufferCapacity = 8)
+
+    /** (old, new) session ids: a dropped session that reconnected by itself. */
+    val replaced: SharedFlow<Pair<Long, Long>> = _replaced
+
+    /**
+     * Opens a session to [target] with a [cols] x [rows] terminal. If the target asks for it, a
+     * session that drops is replaced by a new one, with growing pauses between attempts.
+     */
     suspend fun open(target: Target, cols: Int, rows: Int): Session {
+        val s = openOnce(target, cols, rows)
+        if (target.autoReconnect) watch(s)
+        return s
+    }
+
+    private fun watch(s: Session) {
+        scope.launch {
+            val st = s.status.first { it.closed }
+            if (!st.dropped) return@launch
+            val (cols, rows) = synchronized(s.screen) { s.screen.cols to s.screen.rows }
+            for ((attempt, pause) in RECONNECT_PAUSES_MS.withIndex()) {
+                log.info(
+                    "session",
+                    "connection dropped; reconnecting in ${pause / 1000} s (attempt ${attempt + 1})",
+                    s.id,
+                )
+                kotlinx.coroutines.delay(pause)
+                val next =
+                    try {
+                        openOnce(s.target, cols.coerceAtLeast(2), rows.coerceAtLeast(2))
+                    } catch (e: Exception) {
+                        log.warn("session", "reconnect failed: ${e.message}", s.id)
+                        continue
+                    }
+                forget(s)
+                _replaced.tryEmit(s.id to next.id)
+                val r =
+                    next.status.first { it.phase == SessionPhase.SESSION_PHASE_OPEN || it.closed }
+                if (!r.closed) {
+                    log.info("session", "reconnected as session ${next.id}", s.id)
+                    watch(next)
+                    return@launch
+                }
+                if (!r.dropped) return@launch
+                forget(next)
+            }
+            log.warn("session", "gave up reconnecting", s.id)
+        }
+    }
+
+    private suspend fun openOnce(target: Target, cols: Int, rows: Int): Session {
         val c = connection()
         val reply =
             c.request(
@@ -172,6 +226,18 @@ class SessionRegistry(
         val id = reply.expect(EngineMsg.BodyCase.SESSION_OPENED).sessionOpened.sessionId
         log.info("session", "opened ${target.displayName} (${cols}x$rows)", id)
         val session = Session(id, target, c, this)
+        if (target.startup.isNotBlank()) {
+            scope.launch {
+                val st =
+                    session.status.first {
+                        it.phase == SessionPhase.SESSION_PHASE_OPEN || it.closed
+                    }
+                if (!st.closed) {
+                    session.input((target.startup.trim() + "\r").toByteArray())
+                    log.info("session", "ran the startup command", id)
+                }
+            }
+        }
         byId[id] = session
         _sessions.value = _sessions.value + session
         return session
@@ -249,6 +315,9 @@ class SessionRegistry(
  */
 data class ClipboardOffer(val text: String, val primary: Boolean)
 
+/** Pauses before successive reconnect attempts. */
+private val RECONNECT_PAUSES_MS = listOf(2_000L, 5_000L, 15_000L, 30_000L, 30_000L, 60_000L)
+
 /** Something the engine needs a human to decide. */
 sealed interface Prompt {
     data class HostKey(val prompt: HostKeyPrompt) : Prompt
@@ -260,6 +329,20 @@ sealed interface Prompt {
 data class SessionStatus(val phase: SessionPhase, val detail: String = "") {
     val closed: Boolean
         get() = phase == SessionPhase.SESSION_PHASE_CLOSED
+
+    /**
+     * Closed because the connection went away (network, timeout, engine), not by the user, the
+     * shell exiting, or a refusal (host key, authentication) that retrying would not fix.
+     */
+    val dropped: Boolean
+        get() =
+            closed &&
+                detail != "closed" &&
+                !detail.startsWith("the remote shell exited") &&
+                !detail.startsWith("HOST KEY") &&
+                !detail.contains("host key", ignoreCase = true) &&
+                !detail.contains("authentication", ignoreCase = true) &&
+                !detail.contains("invalid frame")
 }
 
 /** One SSH session, as the frontend sees it. */

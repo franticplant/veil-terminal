@@ -56,6 +56,8 @@ class Profiles(context: Context) {
                     .put("port", t.port)
                     .put("username", t.username)
                     .put("key", t.keyId)
+                    .put("startup", t.startup)
+                    .put("reconnect", t.autoReconnect)
             )
         }
         prefs.edit().putString("list", arr.toString()).apply()
@@ -72,6 +74,8 @@ class Profiles(context: Context) {
                 username = o.getString("username"),
                 label = o.optString("label"),
                 keyId = o.optString("key"),
+                startup = o.optString("startup"),
+                autoReconnect = o.optBoolean("reconnect"),
             )
         }
     }

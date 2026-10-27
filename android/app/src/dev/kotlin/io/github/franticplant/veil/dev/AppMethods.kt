@@ -458,6 +458,8 @@ class AppMethods(private val app: VeilApplication) {
                     "key",
                     "A key name (keys.list) to try before passwords; overrides the profile's.",
                 ),
+                str("startup", "Typed once the shell is open (e.g. tmux new -A -s main)."),
+                bool("reconnect", "Reconnect by itself when the connection drops."),
             )
         ) { p ->
             val target =
@@ -476,6 +478,12 @@ class AppMethods(private val app: VeilApplication) {
                         Target(p.string("host"), p.intOr("port", 22), p.string("user"))
                     }
                     .let { if (p.has("key")) it.copy(keyId = p.string("key")) else it }
+                    .let { if (p.has("startup")) it.copy(startup = p.string("startup")) else it }
+                    .let {
+                        if (p.has("reconnect"))
+                            it.copy(autoReconnect = p.boolOr("reconnect", false))
+                        else it
+                    }
             val s = engine { registry.open(target, p.intOr("cols", 80), p.intOr("rows", 24)) }
             app.log.info("dev", "session opened through the dev API", s.id)
             JSONObject().put("id", s.id)

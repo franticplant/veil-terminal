@@ -80,6 +80,7 @@ import io.github.franticplant.veil.engine.proto.HostKeyDecision
 import io.github.franticplant.veil.engine.proto.HostKeyPrompt
 import io.github.franticplant.veil.engine.proto.SessionPhase
 import io.github.franticplant.veil.frontend.KeyEncoder.Key
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -171,6 +172,11 @@ private fun VeilApp(host: EngineHost, profiles: Profiles) {
                 error = "Cannot start a session: ${e.message}"
             }
         }
+    }
+
+    // A session that reconnected by itself keeps its tab.
+    LaunchedEffect(Unit) {
+        host.sessions.replaced.collect { (old, new) -> if (currentId == old) currentId = new }
     }
 
     // Covering the notch: only the keyboard pushes the terminal; text may sit under the cutout.
@@ -383,6 +389,8 @@ private fun ProfileDialog(
     var port by remember { mutableStateOf((initial?.port ?: 22).toString()) }
     var user by remember { mutableStateOf(initial?.username ?: "") }
     var keyId by remember { mutableStateOf(initial?.keyId ?: "") }
+    var startup by remember { mutableStateOf(initial?.startup ?: "") }
+    var reconnect by remember { mutableStateOf(initial?.autoReconnect ?: false) }
     val allKeys by keys.keys.collectAsState()
     val portNum = port.toIntOrNull()
     val valid =
@@ -447,12 +455,31 @@ private fun ProfileDialog(
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
+                OutlinedTextField(
+                    startup,
+                    { startup = it },
+                    label = { Text("Run after login (e.g. tmux new -A -s main)") },
+                    singleLine = true,
+                )
+                SettingSwitch("Reconnect when the connection drops", reconnect) { reconnect = it }
             }
         },
         confirmButton = {
             Button(
                 enabled = valid,
-                onClick = { onSave(Target(hostName, portNum!!, user, label.trim(), keyId)) },
+                onClick = {
+                    onSave(
+                        Target(
+                            hostName,
+                            portNum!!,
+                            user,
+                            label.trim(),
+                            keyId,
+                            startup.trim(),
+                            reconnect,
+                        )
+                    )
+                },
             ) {
                 Text("Save")
             }
