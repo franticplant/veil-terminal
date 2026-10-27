@@ -177,6 +177,32 @@ veil-ctl call app.exits            # why recent Veil processes ended (crash, ANR
 
 The address is remembered from `pair`, or comes from `-a` or `$VEIL_ADDR`.
 
+Use `scripts/build` rather than a bare Gradle build: it sets the version from
+git. A bare build comes out as `0.0.0-local`, and the updater refuses it,
+because it never installs a downgrade.
+
+## Metrics and memory
+
+devd samples every Veil process (app, engine) and itself every 2 s while its
+listener runs, and keeps 30 minutes. The Metrics tab on the phone charts them:
+
+- pinch to zoom the time window;
+- drag sideways to scroll back;
+- tap, or hold and drag, to read values on all charts at once;
+- double tap to return to live.
+
+From the laptop:
+
+```sh
+veil-ctl top                       # live table
+veil-ctl call metrics.history prefixes:='["veil-engine."]'
+veil-ctl call devd.smaps top=40    # devd's PSS by mapping (boot image, heap, native, code)
+veil-ctl call devd.threads         # live threads with their stack tops
+```
+
+What the numbers mean on GrapheneOS, and the budget, are in
+[design/0003](design/0003-memory-budget.md).
+
 ## Calling methods
 
 ```sh
