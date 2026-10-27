@@ -94,7 +94,8 @@ class Server(private val app: DevdApp) {
                     // A missing or broken native library must not crash devd: report it, so the
                     // phone shows why the listener is down.
                     app.log.log("error", "listener", "native server unavailable: $e")
-                    _binds.value = listOf(Bind("native", null, "error", "native server unavailable: $e"))
+                    _binds.value =
+                        listOf(Bind("native", null, "error", "native server unavailable: $e"))
                     running = false
                     return
                 }

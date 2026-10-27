@@ -25,6 +25,15 @@ object ProcSelf {
                 )
                 .put("nativeHeapKb", Debug.getNativeHeapAllocatedSize() / 1024)
                 .put("fds", File("/proc/self/fd").list()?.size ?: -1)
+        // Where the PSS goes, by Android's categories (summary.* keys of Debug.MemoryInfo).
+        val mi = Debug.MemoryInfo().also { Debug.getMemoryInfo(it) }
+        val breakdown = JSONObject()
+        for ((k, v) in mi.memoryStats) {
+            if (k.startsWith("summary.") && k != "summary.total-pss") {
+                breakdown.put(k.removePrefix("summary."), v.toLongOrNull() ?: continue)
+            }
+        }
+        o.put("pssBreakdownKb", breakdown)
         try {
             for (line in File("/proc/self/status").readLines()) {
                 val (k, v) =
