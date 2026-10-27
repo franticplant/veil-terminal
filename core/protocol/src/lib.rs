@@ -68,6 +68,70 @@ pub fn check_size(size: Option<&v1::TermSize>) -> Result<(u16, u16), String> {
     Ok((size.cols as u16, size.rows as u16))
 }
 
+/// Checks a frame against the render contract (the rules every frontend
+/// enforces, e.g. the Android `ScreenModel`): size within bounds, rows and
+/// cursor inside it, runs inside their row and in order, each run's text
+/// matching its cells, no control characters, a bounded title. `prev` is the
+/// size of the frame before it, which a partial frame must keep.
+pub fn check_frame(f: &v1::Frame, prev: Option<(u32, u32)>) -> Result<(), String> {
+    let size = f.size.as_ref().ok_or("frame without size")?;
+    let (c, r) = (size.cols, size.rows);
+    if !(MIN_COLS..=MAX_COLS).contains(&c) || !(MIN_ROWS..=MAX_ROWS).contains(&r) {
+        return Err(format!("size {c}x{r} out of bounds"));
+    }
+    if !f.full && prev != Some((c, r)) {
+        return Err(format!(
+            "partial frame changes the size to {c}x{r} (was {prev:?})"
+        ));
+    }
+    if f.rows.len() > r as usize {
+        return Err(format!("{} rows for a {r}-row screen", f.rows.len()));
+    }
+    if f.title.chars().count() > MAX_TITLE_CHARS || f.title.chars().any(char::is_control) {
+        return Err("bad title".into());
+    }
+    if let Some(cur) = &f.cursor
+        && (cur.row >= r || cur.col >= c)
+    {
+        return Err(format!("cursor {},{} outside {c}x{r}", cur.row, cur.col));
+    }
+    for row in &f.rows {
+        if row.index >= r {
+            return Err(format!("row index {}", row.index));
+        }
+        let mut next = 0;
+        for run in &row.runs {
+            let wide = run.flags & v1::RunFlag::Wide as u32 != 0;
+            if run.col < next {
+                return Err(format!(
+                    "runs overlap or are out of order in row {}",
+                    row.index
+                ));
+            }
+            if run.cells == 0 || run.col + run.cells > c {
+                return Err(format!("run outside row {}", row.index));
+            }
+            let scalars = run.text.chars().count() as u32;
+            let per_cell = if wide { 2 } else { 1 };
+            let one_cluster = run.cells == per_cell && scalars >= 1;
+            if scalars * per_cell != run.cells && !one_cluster {
+                return Err(format!(
+                    "run text {:?} does not match its {} cells in row {}",
+                    run.text, run.cells, row.index
+                ));
+            }
+            if let Some(ch) = run.text.chars().find(|c| c.is_control()) {
+                return Err(format!(
+                    "control character U+{:04X} in row {}",
+                    ch as u32, row.index
+                ));
+            }
+            next = run.col + run.cells;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
     #[error("message is {len} bytes, over the {max}-byte limit")]
@@ -145,6 +209,72 @@ mod tests {
             decode_client(&buf),
             Err(DecodeError::TooLarge { .. })
         ));
+    }
+
+    /// Mutated messages: decoding never panics, and what decodes re-encodes
+    /// and decodes to the same message.
+    #[test]
+    fn mutated_messages_decode_or_fail_cleanly() {
+        let seeds: Vec<Vec<u8>> = vec![
+            encode(&v1::ClientMsg {
+                request_id: 7,
+                body: Some(v1::client_msg::Body::OpenSession(v1::OpenSession {
+                    host: "example.org".into(),
+                    port: 22,
+                    username: "alice".into(),
+                    size: Some(v1::TermSize { cols: 80, rows: 24 }),
+                    public_keys: vec!["ecdsa-sha2-nistp256 AAAA".into()],
+                })),
+            }),
+            encode(&v1::EngineMsg {
+                request_id: 0,
+                body: Some(v1::engine_msg::Body::Frame(v1::Frame {
+                    session_id: 1,
+                    seq: 3,
+                    size: Some(v1::TermSize { cols: 4, rows: 2 }),
+                    full: true,
+                    rows: vec![v1::Row {
+                        index: 0,
+                        runs: vec![v1::Run {
+                            col: 0,
+                            cells: 2,
+                            text: "hi".into(),
+                            ..Default::default()
+                        }],
+                    }],
+                    ..Default::default()
+                })),
+            }),
+        ];
+        let mut rng = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        for _ in 0..20_000 {
+            let mut buf = seeds[(next() % 2) as usize].clone();
+            for _ in 0..(1 + next() % 4) {
+                let i = (next() as usize) % buf.len();
+                match next() % 3 {
+                    0 => buf[i] = next() as u8,
+                    1 => buf.insert(i, next() as u8),
+                    _ => {
+                        buf.remove(i);
+                    }
+                }
+                if buf.is_empty() {
+                    buf.push(0);
+                }
+            }
+            if let Ok(m) = decode_client(&buf) {
+                assert_eq!(decode_client(&encode(&m)).unwrap(), m);
+            }
+            if let Ok(m) = decode_engine(&buf) {
+                assert_eq!(decode_engine(&encode(&m)).unwrap(), m);
+            }
+        }
     }
 
     #[test]

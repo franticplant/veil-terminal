@@ -7,6 +7,8 @@ members = [
     "android/jni",
     "dev/ctl",
 ]
+# Needs nightly and cargo-fuzz; see fuzz/Cargo.toml.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.1"

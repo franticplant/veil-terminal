@@ -1,0 +1,37 @@
+# libFuzzer targets (cargo-fuzz layout). Outside the workspace: they need a
+# nightly toolchain and cargo-fuzz, which the build image does not carry yet.
+#
+#   cargo +nightly fuzz run protocol_decode
+#   cargo +nightly fuzz run term_feed
+#
+# The same bodies run on stable, with a seeded generator, as ordinary tests:
+# core/protocol `mutated_messages_decode_or_fail_cleanly` and core/term
+# `random_input_always_yields_valid_frames`.
+[package]
+name = "veil-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+veil-protocol = { path = "../core/protocol" }
+veil-term = { path = "../core/term" }
+
+[[bin]]
+name = "protocol_decode"
+path = "fuzz_targets/protocol_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "term_feed"
+path = "fuzz_targets/term_feed.rs"
+test = false
+doc = false
+bench = false

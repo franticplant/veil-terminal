@@ -231,7 +231,16 @@ impl Terminal {
             self.sent_rest = None;
         }
 
-        let offset = self.term.grid().display_offset();
+        // The emulator can leave the view scrolled further back than the
+        // history it still has (a reset, a resize that drops history);
+        // indexing with that offset reads outside the grid. Snap back.
+        let grid = self.term.grid();
+        let offset = if grid.display_offset() > grid.history_size() {
+            self.term.scroll_display(Scroll::Bottom);
+            0
+        } else {
+            grid.display_offset()
+        };
         let mut changed = Vec::new();
         for r in candidates {
             let row = self.row(r, offset);
@@ -286,15 +295,25 @@ impl Terminal {
                 col += 1;
                 continue;
             }
-            let (fg, bg, flags) = attrs(cell);
-            let wide = cell.flags.contains(Flags::WIDE_CHAR);
-            let width = if wide { 2 } else { 1 };
-            let cluster = cell.zerowidth().is_some_and(|z| !z.is_empty());
-            let mut text = String::new();
-            text.push(cell.c);
-            if let Some(z) = cell.zerowidth() {
-                text.extend(z);
+            let (fg, bg, mut flags) = attrs(cell);
+            // A wide character needs two columns; in the last column (left
+            // there by a resize) only one exists, so it is drawn narrow.
+            let wide = cell.flags.contains(Flags::WIDE_CHAR) && col + 1 < cols;
+            if !wide {
+                flags &= !(v1::RunFlag::Wide as u32);
             }
+            let width = if wide { 2 } else { 1 };
+            // The emulator keeps some control characters in cells (a tab
+            // where one landed, for copying); frames carry only visible text.
+            let c = if cell.c.is_control() { ' ' } else { cell.c };
+            let marks: Vec<char> = cell
+                .zerowidth()
+                .map(|z| z.iter().copied().filter(|m| !m.is_control()).collect())
+                .unwrap_or_default();
+            let cluster = !marks.is_empty();
+            let mut text = String::new();
+            text.push(c);
+            text.extend(&marks);
             // Extend the previous run when attributes match and neither side
             // is a multi-scalar cluster (which must be a run of its own).
             if let Some(last) = runs.last_mut()
@@ -305,7 +324,7 @@ impl Terminal {
                 && last.col + last.cells == col as u32
                 && last.text.chars().count() as u32 * width == last.cells
             {
-                last.text.push(cell.c);
+                last.text.push(c);
                 last.cells += width;
             } else {
                 runs.push(v1::Run {
@@ -364,9 +383,14 @@ impl Terminal {
             CursorShape::Beam => v1::CursorShape::Beam,
             CursorShape::Hidden => v1::CursorShape::Unspecified,
         };
+        // Scrolled back, the cursor's line can be below the view: it is then
+        // hidden, but its position must still lie on the screen (the render
+        // contract), so it is clamped.
+        let last_row = self.term.screen_lines().saturating_sub(1) as i32;
+        let last_col = self.term.columns().saturating_sub(1);
         v1::Cursor {
-            row: row.max(0) as u32,
-            col: point.column.0 as u32,
+            row: row.clamp(0, last_row) as u32,
+            col: point.column.0.min(last_col) as u32,
             visible: in_view && content.cursor.shape != CursorShape::Hidden,
             shape: shape as i32,
         }
@@ -582,6 +606,159 @@ mod tests {
         assert!(!f.cursor.unwrap().visible || f.cursor.unwrap().row < 3);
         t.scroll_to_bottom();
         assert_eq!(t.frame().unwrap().scroll_offset, 0);
+    }
+
+    /// A small xorshift generator: deterministic, no dependency.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    /// Pieces of real terminal traffic, to build escape-heavy input from.
+    const VOCAB: &[&str] = &[
+        "a",
+        "hello world ",
+        "\r\n",
+        "\n",
+        "\t",
+        "\x08",
+        "\x07",
+        "漢字",
+        "e\u{301}",
+        "👍🏽",
+        "🇹🇷",
+        "\u{200d}",
+        "\u{fe0f}",
+        "ｗｉｄｅ",
+        "\x1b[1;31m",
+        "\x1b[0m",
+        "\x1b[38;5;208m",
+        "\x1b[48;2;10;20;30m",
+        "\x1b[7m",
+        "\x1b[4:3m",
+        "\x1b[H",
+        "\x1b[2J",
+        "\x1b[K",
+        "\x1b[1K",
+        "\x1b[5;10H",
+        "\x1b[999;999H",
+        "\x1b[A",
+        "\x1b[10B",
+        "\x1b[3C",
+        "\x1b[200D",
+        "\x1b[2;5r",
+        "\x1b[r",
+        "\x1b[S",
+        "\x1b[3T",
+        "\x1bM",
+        "\x1bD",
+        "\x1bE",
+        "\x1b[4h",
+        "\x1b[4l",
+        "\x1b[?25l",
+        "\x1b[?25h",
+        "\x1b[?1049h",
+        "\x1b[?1049l",
+        "\x1b[?1h",
+        "\x1b[?2004h",
+        "\x1b[?1000h",
+        "\x1b[?1006h",
+        "\x1b[2 q",
+        "\x1b[6 q",
+        "\x1b[@",
+        "\x1b[5P",
+        "\x1b[3L",
+        "\x1b[2M",
+        "\x1b[3X",
+        "\x1b[6n",
+        "\x1b[c",
+        "\x1b]0;title\x07",
+        "\x1b]2;\u{9b}x\x1b\\",
+        "\x1b]52;c;aGk=\x07",
+        "\x1b]52;c;?\x07",
+        "\x1b]8;;http://x\x07link\x1b]8;;\x07",
+        "\x1bc",
+        "\x1b(0lqk\x1b(B",
+        "\x1b#8",
+        "\x1b[?7l",
+        "\x1b[?7h",
+        "\x1b[3g",
+        "\x1bH",
+        "\x1b[?6h",
+        "\x1b[?6l",
+        "\x1b[",
+        "\x1b]",
+        "\x1bP",
+        "\u{9b}31m",
+        "\x00",
+        "\x7f",
+        "\u{ffff}",
+    ];
+
+    /// Feeds random and escape-heavy input at random sizes, with resizes and
+    /// scrolling; every frame must satisfy the render contract.
+    #[test]
+    fn random_input_always_yields_valid_frames() {
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        for _ in 0..300 {
+            let mut cols = 2 + rng.below(120) as u16;
+            let mut rows = 2 + rng.below(50) as u16;
+            let mut t = Terminal::new(cols, rows);
+            let mut prev: Option<(u32, u32)> = None;
+            for _ in 0..(1 + rng.below(6)) {
+                let mut input = Vec::new();
+                for _ in 0..rng.below(400) {
+                    if rng.below(4) == 0 {
+                        input.push(rng.next() as u8);
+                    } else {
+                        let piece = VOCAB[rng.below(VOCAB.len() as u64) as usize];
+                        input.extend_from_slice(piece.as_bytes());
+                    }
+                }
+                t.feed(&input);
+                match rng.below(5) {
+                    0 => {
+                        cols = 2 + rng.below(200) as u16;
+                        rows = 2 + rng.below(80) as u16;
+                        t.resize(cols, rows);
+                    }
+                    1 => t.scroll(rng.below(40) as i32 - 20),
+                    2 => t.scroll_to_bottom(),
+                    3 => t.request_full(),
+                    _ => {}
+                }
+                if let Some(f) = t.frame() {
+                    if let Err(e) = veil_protocol::check_frame(&f, prev) {
+                        panic!(
+                            "invalid frame after {} bytes at {cols}x{rows}: {e}",
+                            input.len()
+                        );
+                    }
+                    let size = f.size.unwrap();
+                    prev = Some((size.cols, size.rows));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tabs_render_as_blanks_not_control_characters() {
+        let mut t = Terminal::new(20, 2);
+        t.feed(b"a\tb");
+        let f = t.frame().unwrap();
+        veil_protocol::check_frame(&f, None).unwrap();
+        let text: String = f.rows[0].runs.iter().map(|r| r.text.as_str()).collect();
+        assert!(!text.contains('\t'), "{text:?}");
     }
 
     #[test]
