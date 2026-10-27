@@ -183,6 +183,26 @@ class DevdMethods(private val app: DevdApp) {
             app.metrics.latest.value ?: JSONObject().put("unixMs", JSONObject.NULL)
         }
 
+        table.add(
+            method(
+                "devd.threads",
+                Scope.READ,
+                "devd's live threads: name, state, and the top of each stack (for leak hunting).",
+            )
+        ) {
+            JSONArray().apply {
+                for ((t, stack) in Thread.getAllStackTraces().entries.sortedBy { it.key.name }) {
+                    put(
+                        JSONObject()
+                            .put("name", t.name)
+                            .put("state", t.state.name)
+                            .put("daemon", t.isDaemon)
+                            .put("top", JSONArray(stack.take(6).map { it.toString() }))
+                    )
+                }
+            }
+        }
+
         table.add(method("metrics.keys", Scope.READ, "Names of the recorded time series.")) {
             JSONArray(app.metrics.keys())
         }
