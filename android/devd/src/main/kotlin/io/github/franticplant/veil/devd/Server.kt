@@ -6,20 +6,9 @@ import io.github.franticplant.veil.dev.api.MethodSpec
 import io.github.franticplant.veil.dev.api.Params
 import io.github.franticplant.veil.dev.api.Reply
 import io.github.franticplant.veil.dev.api.Scope
-import java.io.BufferedInputStream
-import java.io.BufferedOutputStream
-import java.io.DataInputStream
-import java.io.DataOutputStream
-import java.io.EOFException
 import java.io.IOException
-import java.net.InetAddress
-import java.net.InetSocketAddress
-import java.net.SocketException
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLServerSocket
-import javax.net.ssl.SSLSocket
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONArray
@@ -38,11 +27,45 @@ import org.json.JSONObject
  * in a scope the pairing was granted, and a secret parameter also needs the secrets scope.
  */
 class Server(private val app: DevdApp) {
-    private val tls by lazy { Tls.context() }
     private val serverCert by lazy { Tls.serverCertificate().encoded }
-    private val listeners = ConcurrentHashMap<String, SSLServerSocket>()
-    private val clients = ConcurrentHashMap.newKeySet<SSLSocket>()
-    private val slots = Semaphore(MAX_CONNECTIONS)
+    /** "address:port" keys of the listeners the native side has open. */
+    private val listeners = ConcurrentHashMap.newKeySet<String>()
+    @Volatile private var native = 0L
+
+    /** What the native side calls: Keystore signing and request handling. */
+    private val callback =
+        object : DevdNative.Callback {
+            override fun sign(data: ByteArray): ByteArray? =
+                try {
+                    Tls.sign(data)
+                } catch (e: Exception) {
+                    app.log.warn("listener", "signing the handshake failed: $e")
+                    null
+                }
+
+            override fun request(
+                clientCertHex: String,
+                local: String,
+                peer: String,
+                json: String,
+            ): String {
+                val cert = hexToBytes(clientCertHex)
+                val req =
+                    try {
+                        JSONObject(json)
+                    } catch (e: JSONException) {
+                        return Reply.error(ErrorCode.INVALID_PARAMS, "request is not a JSON object")
+                            .put("id", JSONObject.NULL)
+                            .toString()
+                    }
+                val reply = dispatch(Conn(Tls.sha256Hex(cert), cert, local, peer), req)
+                return reply.put("id", req.opt("id") ?: JSONObject.NULL).toString()
+            }
+        }
+
+    private fun hexToBytes(h: String): ByteArray =
+        ByteArray(h.length / 2) { h.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+
     private val _addresses = MutableStateFlow<List<String>>(emptyList())
     private val unpairedCalls = ArrayDeque<Long>()
 
@@ -53,7 +76,7 @@ class Server(private val app: DevdApp) {
     val addresses: StateFlow<List<String>> = _addresses
 
     val activeConnections: Int
-        get() = clients.size
+        get() = native.takeIf { it != 0L }?.let { DevdNative.connections(it) } ?: 0
 
     /** The server certificate's SHA-256, which clients pin. */
     val fingerprint: String by lazy { Tls.sha256Hex(serverCert) }
@@ -63,6 +86,7 @@ class Server(private val app: DevdApp) {
         if (running) return
         running = true
         app.log.info("listener", "starting")
+        if (native == 0L) native = DevdNative.start(callback, serverCert)
         watcher =
             Thread(
                     {
@@ -93,12 +117,10 @@ class Server(private val app: DevdApp) {
         if (!running) return
         running = false
         watcher?.interrupt()
-        for ((addr, s) in listeners) {
-            closeQuietly(s)
-            app.log.info("listener", "closed $addr")
-        }
+        for (key in listeners) app.log.info("listener", "closed $key")
         listeners.clear()
-        clients.forEach { closeQuietly(it) }
+        if (native != 0L) DevdNative.stop(native)
+        native = 0L
         _addresses.value = emptyList()
         _binds.value = emptyList()
         reported.clear()
@@ -133,9 +155,10 @@ class Server(private val app: DevdApp) {
             wanted[name] = up[name].orEmpty().mapNotNull { it.hostAddress }
         }
         val keys = wanted.values.flatten().map { "$it:${v.port}" }.toSet()
-        for ((key, sock) in listeners) {
-            if (key !in keys || sock.isClosed) {
-                closeQuietly(sock)
+        for (key in listeners.toList()) {
+            if (key !in keys) {
+                val (a, p) = key.substringBeforeLast(':') to key.substringAfterLast(':').toInt()
+                if (native != 0L) DevdNative.unbind(native, a, p)
                 listeners.remove(key)
                 app.log.info("listener", "closed $key")
             }
@@ -148,7 +171,7 @@ class Server(private val app: DevdApp) {
             }
             for (addr in addrs) {
                 val key = "$addr:${v.port}"
-                if (!listeners.containsKey(key) && running) {
+                if (key !in listeners && running) {
                     val error = bind(addr, v.port, key)
                     if (error != null) {
                         binds.add(Bind(iface, key, "error", error))
@@ -163,7 +186,7 @@ class Server(private val app: DevdApp) {
             }
         }
         _binds.value = binds
-        _addresses.value = listeners.keys.sorted()
+        _addresses.value = listeners.sorted()
     }
 
     /** Logs [what] for [key] only when it changed since the last pass. */
@@ -174,127 +197,12 @@ class Server(private val app: DevdApp) {
         }
     }
 
-    /** Opens a listener on [addr]; returns why not, or null. */
-    private fun bind(addr: String, port: Int, key: String): String? =
-        try {
-            val sock = tls.serverSocketFactory.createServerSocket() as SSLServerSocket
-            sock.reuseAddress = true
-            sock.bind(InetSocketAddress(InetAddress.getByName(addr), port), 16)
-            sock.needClientAuth = true
-            sock.enabledProtocols = arrayOf("TLSv1.3")
-            listeners[key] = sock
-            Thread({ accept(sock, key) }, "devd-accept-$key").apply {
-                isDaemon = true
-                start()
-            }
-            null
-        } catch (e: Exception) {
-            // IOException for the socket; a Keystore or TLS failure is reported, not fatal.
-            "${e.javaClass.simpleName}: ${e.message}"
-        }
-
-    private fun accept(server: SSLServerSocket, key: String) {
-        while (running && !server.isClosed) {
-            val sock =
-                try {
-                    server.accept() as SSLSocket
-                } catch (e: IOException) {
-                    break
-                }
-            if (!slots.tryAcquire()) {
-                app.log.warn(
-                    "listener",
-                    "refused a connection on $key: $MAX_CONNECTIONS already open",
-                )
-                closeQuietly(sock)
-                continue
-            }
-            clients.add(sock)
-            Thread(
-                    {
-                        try {
-                            serve(sock)
-                        } finally {
-                            clients.remove(sock)
-                            closeQuietly(sock)
-                            slots.release()
-                        }
-                    },
-                    "devd-conn",
-                )
-                .apply {
-                    isDaemon = true
-                    start()
-                }
-        }
-    }
-
-    private fun serve(sock: SSLSocket) {
-        val peer = addr(sock.remoteSocketAddress)
-        val local = addr(sock.localSocketAddress)
-        val clientCert =
-            try {
-                sock.soTimeout = HANDSHAKE_TIMEOUT_MS
-                sock.startHandshake()
-                sock.session.peerCertificates.first().encoded
-            } catch (e: IOException) {
-                app.log.warn("listener", "handshake with $peer failed: ${e.message}")
-                return
-            }
-        sock.soTimeout = IDLE_TIMEOUT_MS
-        val clientId = Tls.sha256Hex(clientCert)
-        val input = DataInputStream(BufferedInputStream(sock.inputStream))
-        val output = DataOutputStream(BufferedOutputStream(sock.outputStream))
-        while (running) {
-            val len =
-                try {
-                    input.readInt()
-                } catch (e: EOFException) {
-                    return
-                } catch (e: IOException) {
-                    return
-                }
-            if (len <= 0 || len > MAX_FRAME_BYTES) {
-                write(
-                    output,
-                    Reply.error(
-                        ErrorCode.INVALID_PARAMS,
-                        "frame of $len bytes (limit $MAX_FRAME_BYTES)",
-                    ),
-                )
-                return
-            }
-            val buf = ByteArray(len)
-            try {
-                input.readFully(buf)
-            } catch (e: IOException) {
-                return
-            }
-            val req =
-                try {
-                    JSONObject(String(buf, Charsets.UTF_8))
-                } catch (e: JSONException) {
-                    write(
-                        output,
-                        Reply.error(ErrorCode.INVALID_PARAMS, "request is not a JSON object"),
-                    )
-                    continue
-                }
-            val reply = dispatch(Conn(clientId, clientCert, local, peer), req)
-            reply.put("id", req.opt("id") ?: JSONObject.NULL)
-            try {
-                write(output, reply)
-            } catch (e: SocketException) {
-                return
-            }
-        }
-    }
-
-    private fun write(out: DataOutputStream, msg: JSONObject) {
-        val bytes = msg.toString().toByteArray(Charsets.UTF_8)
-        out.writeInt(bytes.size)
-        out.write(bytes)
-        out.flush()
+    /** Opens a listener on [addr] (in the native server); returns why not, or null. */
+    private fun bind(addr: String, port: Int, key: String): String? {
+        if (native == 0L) return "the server is not running"
+        val error = DevdNative.bind(native, addr, port)
+        if (error == null) listeners.add(key)
+        return error
     }
 
     /** Who is on a connection and where it arrived. */
@@ -304,9 +212,6 @@ class Server(private val app: DevdApp) {
         val local: String,
         val peer: String,
     )
-
-    private fun addr(a: java.net.SocketAddress?): String =
-        (a as? InetSocketAddress)?.let { "${it.address.hostAddress}:${it.port}" } ?: a.toString()
 
     private fun dispatch(conn: Conn, req: JSONObject): JSONObject {
         val clientId = conn.clientId

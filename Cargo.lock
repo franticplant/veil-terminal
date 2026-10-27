@@ -2497,6 +2497,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "veil-devd-native"
+version = "0.0.1"
+dependencies = [
+ "jni",
+ "rustls",
+]
+
+[[package]]
 name = "veil-engine"
 version = "0.0.1"
 dependencies = [

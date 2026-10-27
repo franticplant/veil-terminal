@@ -14,6 +14,29 @@ def versionNameEnv = providers.environmentVariable('VEIL_VERSION_NAME')
 // devd checks every APK it installs against the pinned Veil certificate.
 def pinnedCert = rootProject.file('../dev/signing/veil-release-cert.sha256').text.trim()
 
+// devd's native network side (android/devd-native, crate veil-devd-native) is
+// built by cargo-ndk into build/rustJniLibs/<abi>/libveil_devd.so.
+def rustAbis = (findProperty('rustAbis') ?: 'arm64-v8a,x86_64').toString().split(',')
+def rustOut = layout.buildDirectory.dir('rustJniLibs')
+def repoRoot = rootProject.file('..')
+
+def cargoNdk = tasks.register('cargoNdk', Exec) {
+    group = 'build'
+    description = 'Builds libveil_devd.so for each Android ABI with cargo-ndk.'
+    workingDir = repoRoot
+    def args = ['cargo', 'ndk', '--platform', '34']
+    rustAbis.each { args += ['-t', it] }
+    args += ['-o', rustOut.get().asFile.path, 'build', '--release', '--locked', '-p', 'veil-devd-native']
+    commandLine args
+    inputs.files(fileTree(repoRoot) {
+        include 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'
+        include 'android/devd-native/**'
+        exclude '**/target/**'
+    })
+    inputs.property('abis', rustAbis.toList())
+    outputs.dir(rustOut)
+}
+
 android {
     namespace = 'io.github.franticplant.veil.devd'
     compileSdk = 37
@@ -29,6 +52,12 @@ android {
 
     // Only release builds exist, so unit tests run against release.
     testBuildType = 'release'
+
+    sourceSets {
+        main {
+            jniLibs.srcDir(rustOut.get().asFile.path)
+        }
+    }
 
     buildTypes {
         release {
@@ -60,6 +89,8 @@ android {
         compose = true
     }
 }
+
+tasks.named('preBuild') { dependsOn cargoNdk }
 
 androidComponents {
     beforeVariants(selector().withBuildType('debug')) { it.enable = false }

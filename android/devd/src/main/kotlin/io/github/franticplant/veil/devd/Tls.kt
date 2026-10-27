@@ -72,6 +72,14 @@ object Tls {
         }
     }
 
+    /** SHA256withECDSA over [data] with the server key (in Keystore), DER-encoded. */
+    fun sign(data: ByteArray): ByteArray =
+        java.security.Signature.getInstance("SHA256withECDSA").run {
+            initSign(serverKey())
+            update(data)
+            sign()
+        }
+
     fun sha256Hex(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 

@@ -9,6 +9,7 @@ members = [
     "core/wire",
     "guest/engine-host",
     "android/jni",
+    "android/devd-native",
     "dev/ctl",
 ]
 # Needs nightly and cargo-fuzz; see fuzz/Cargo.toml.
