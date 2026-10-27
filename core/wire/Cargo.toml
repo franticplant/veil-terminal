@@ -1,0 +1,15 @@
+[package]
+name = "veil-wire"
+description = "Framing for the engine protocol on byte streams (pipes, Unix sockets, vsock)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+veil-protocol.workspace = true
+
+[lints]
+workspace = true

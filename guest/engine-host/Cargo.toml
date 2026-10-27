@@ -1,0 +1,19 @@
+[package]
+name = "veil-engine-host"
+description = "The Veil engine as a process of its own, speaking the engine protocol on a stream (stdio, Unix socket; vsock in the Microdroid payload)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+veil-engine.workspace = true
+veil-wire.workspace = true
+
+[dev-dependencies]
+veil-protocol.workspace = true
+
+[lints]
+workspace = true

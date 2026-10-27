@@ -2500,6 +2500,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "veil-engine-host"
+version = "0.0.1"
+dependencies = [
+ "veil-engine",
+ "veil-protocol",
+ "veil-wire",
+]
+
+[[package]]
 name = "veil-jni"
 version = "0.0.1"
 dependencies = [
@@ -2522,6 +2531,13 @@ name = "veil-term"
 version = "0.0.1"
 dependencies = [
  "alacritty_terminal",
+ "veil-protocol",
+]
+
+[[package]]
+name = "veil-wire"
+version = "0.0.1"
+dependencies = [
  "veil-protocol",
 ]
 

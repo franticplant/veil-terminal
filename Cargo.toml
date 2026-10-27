@@ -4,6 +4,8 @@ members = [
     "core/protocol",
     "core/term",
     "core/engine",
+    "core/wire",
+    "guest/engine-host",
     "android/jni",
     "dev/ctl",
 ]
@@ -21,6 +23,7 @@ rust-version = "1.99"
 veil-protocol = { path = "core/protocol" }
 veil-term = { path = "core/term" }
 veil-engine = { path = "core/engine" }
+veil-wire = { path = "core/wire" }
 
 prost = "0.14.4"
 prost-build = "0.14.4"
