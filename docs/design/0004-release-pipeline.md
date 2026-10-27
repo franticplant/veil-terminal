@@ -66,8 +66,10 @@ Pushing a tag `vX.Y.Z` does the following:
      trip, pinned to this workflow;
    - the signing certificate is verified independently, with the runner's
      own `apksigner` against the tag's pinned digest;
-   - the release is created with all its assets at once. v0.x releases and
-     tags with a suffix are marked pre-release. The notes come from
+   - the release is created with all its assets at once. The tag decides what
+     kind of release it is: `vX.Y.Z` is a full release, shown as latest; a tag
+     with a suffix (`v0.1.1-pre.1`, `-rc1`) is a pre-release. Between full
+     releases, builds are tagged with a suffix. The notes come from
      `docs/release-notes/<tag>.md` when that file exists.
 
 Only the prod APK is published. Dev Veil carries DevHooks and devd is a

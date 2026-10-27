@@ -9,7 +9,8 @@
 # never as release assets.
 #
 # Triggered by pushing a tag like v0.1.0, or manually for an existing tag.
-# Tags with a suffix (v0.1.0-rc1) and every v0.x release are pre-releases.
+# The tag decides: vX.Y.Z is a full release (shown as latest); a tag with a
+# suffix (v0.1.1-pre.1, v0.2.0-rc1) is a pre-release.
 # The versionName is the tag without its "v"; scripts/build refuses a dirty
 # tree or a HEAD other than the tag's commit.
 #
@@ -119,7 +120,8 @@ jobs:
       - name: Checksums
         run: |
           cp "$RUNNER_TEMP/sbom.spdx.json" "dist/veil-$TAG.spdx.json"
-          (cd dist && sha256sum * | grep -v SHA256SUMS > SHA256SUMS)
+          (cd dist && rm -f SHA256SUMS && sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS")
+          mv "$RUNNER_TEMP/SHA256SUMS" dist/SHA256SUMS
           cat dist/SHA256SUMS
 
       - name: Attest build provenance
@@ -198,7 +200,7 @@ jobs:
           BUILD_SHA: ${{ needs.build.outputs.sha }}
         run: |
           prerelease=""
-          if [[ "$TAG" == *-* || "$TAG" == v0.* ]]; then prerelease="--prerelease"; fi
+          if [[ "$TAG" == *-* ]]; then prerelease="--prerelease"; else prerelease="--latest"; fi
           notes="$RUNNER_TEMP/notes.md"
           if [[ -f "docs/release-notes/$TAG.md" ]]; then
             cp "docs/release-notes/$TAG.md" "$notes"
