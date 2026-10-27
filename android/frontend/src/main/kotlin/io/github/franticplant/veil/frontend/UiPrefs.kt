@@ -32,6 +32,8 @@ class UiPrefs(context: Context) {
         val bellFlash: Boolean = true,
         /** The default for new keys: usable only while the phone is unlocked. */
         val keysWhileUnlocked: Boolean = true,
+        /** Run the engine in its own process (applies at the next start). */
+        val engineProcess: Boolean = false,
     )
 
     private val _values =
@@ -50,6 +52,7 @@ class UiPrefs(context: Context) {
                 bellVibrate = prefs.getBoolean("bellVibrate", true),
                 bellFlash = prefs.getBoolean("bellFlash", true),
                 keysWhileUnlocked = prefs.getBoolean("keysWhileUnlocked", true),
+                engineProcess = prefs.getBoolean("engineProcess", false),
             )
         )
 
@@ -69,6 +72,7 @@ class UiPrefs(context: Context) {
             putBoolean("bellVibrate", v.bellVibrate)
             putBoolean("bellFlash", v.bellFlash)
             putBoolean("keysWhileUnlocked", v.keysWhileUnlocked)
+            putBoolean("engineProcess", v.engineProcess)
         }
         _values.value = v
     }

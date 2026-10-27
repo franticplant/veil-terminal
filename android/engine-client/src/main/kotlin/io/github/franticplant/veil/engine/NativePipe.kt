@@ -19,6 +19,12 @@ internal object NativeEngine {
 
     /** Stops the engine. Later calls with this handle throw. */
     @JvmStatic external fun close(handle: Long)
+
+    /**
+     * Serves an engine on the stream socket [fd] (veil-wire framing) until the other end closes;
+     * blocks. Takes ownership of [fd].
+     */
+    @JvmStatic external fun serveFd(fd: Int, engineVersion: String, dataDir: String)
 }
 
 /** A [MessagePipe] to an engine running in this process. */

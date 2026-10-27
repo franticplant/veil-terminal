@@ -31,8 +31,20 @@ class VeilApplication : Application(), EngineHost {
             devTools = BuildConfig.DEV_TOOLS,
         )
 
+    /**
+     * Where the engine runs, chosen at start from the settings: in this process (JNI), or in the
+     * `:engine` process over a socket. Changing it applies at the next start.
+     */
     private val backend: EngineBackend by lazy {
-        LocalBackend(BuildConfig.VERSION_NAME, File(filesDir, "engine"))
+        if (uiPrefs.values.value.engineProcess) {
+            io.github.franticplant.veil.engine.ProcessBackend(
+                this,
+                BuildConfig.VERSION_NAME,
+                File(filesDir, "engine"),
+            )
+        } else {
+            LocalBackend(BuildConfig.VERSION_NAME, File(filesDir, "engine"))
+        }
     }
 
     override val backendKind: String
@@ -67,6 +79,8 @@ class VeilApplication : Application(), EngineHost {
 
     override fun onCreate() {
         super.onCreate()
+        // The :engine process runs only EngineProcessService; none of the app is set up there.
+        if (getProcessName().endsWith(":engine")) return
         CrashRecorder.install(this, log)
         log.info(
             "app",

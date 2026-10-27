@@ -2526,6 +2526,7 @@ version = "0.0.1"
 dependencies = [
  "jni",
  "veil-engine",
+ "veil-engine-host",
 ]
 
 [[package]]

@@ -140,3 +140,42 @@ pub extern "system" fn Java_io_github_franticplant_veil_engine_NativeEngine_clos
         })
         .resolve::<ThrowRuntimeExAndDefault>()
 }
+
+/// Serves an engine on the stream socket `fd` until the other end closes it,
+/// blocking the calling thread. This is the engine side of a separate engine
+/// process: the app holds the other end of the socket pair (`StreamPipe`).
+/// Takes ownership of `fd`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_franticplant_veil_engine_NativeEngine_serveFd<'caller>(
+    mut unowned: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    fd: jint,
+    engine_version: JString<'caller>,
+    data_dir: JString<'caller>,
+) {
+    unowned
+        .with_env(|env| -> jni::errors::Result<()> {
+            let version = engine_version.try_to_string(env)?;
+            let data_dir = data_dir.try_to_string(env)?;
+            use std::os::fd::FromRawFd;
+            // SAFETY: Kotlin detached this descriptor from its
+            // ParcelFileDescriptor and hands its ownership to us; nothing else
+            // closes or uses it.
+            let sock = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
+            let reader = match sock.try_clone() {
+                Ok(r) => r,
+                Err(e) => return throw_closed(env, format!("cannot use the socket: {e}")),
+            };
+            let config = EngineConfig {
+                version,
+                data_dir: Some(data_dir.into()),
+                dialer: None,
+                host_keys: None,
+            };
+            if let Err(e) = veil_engine_host::serve(config, reader, sock) {
+                return throw_closed(env, format!("engine stream ended: {e}"));
+            }
+            Ok(())
+        })
+        .resolve::<ThrowRuntimeExAndDefault>()
+}

@@ -997,6 +997,15 @@ private fun SettingsDialog(prefs: UiPrefs, onDismiss: () -> Unit) {
                 SettingSwitch("Flash the screen", ui.bellFlash) { on ->
                     prefs.update { it.copy(bellFlash = on) }
                 }
+                Text("Engine", style = MaterialTheme.typography.labelLarge)
+                SettingSwitch("Run the engine in its own process", ui.engineProcess) { on ->
+                    prefs.update { it.copy(engineProcess = on) }
+                }
+                Text(
+                    "Takes effect the next time Veil starts. Sessions survive the UI either way; in " +
+                        "its own process the engine also crashes alone.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 Text("Keys", style = MaterialTheme.typography.labelLarge)
                 SettingSwitch("New keys usable only while unlocked", ui.keysWhileUnlocked) { on ->
                     prefs.update { it.copy(keysWhileUnlocked = on) }

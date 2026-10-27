@@ -47,6 +47,7 @@ class AppMethods(private val app: VeilApplication) {
         addContent()
         addOperate()
         addKeys()
+        addSettings()
         addLifecycle()
         addScenarios()
     }
@@ -818,6 +819,79 @@ class AppMethods(private val app: VeilApplication) {
             }
             app.sshKeys.delete(p.string("name"))
             null
+        }
+    }
+
+    // ---- settings -----------------------------------------------------------
+
+    private fun addSettings() {
+        fun json(v: io.github.franticplant.veil.frontend.UiPrefs.Values) =
+            JSONObject()
+                .put("theme", v.theme)
+                .put("extraKeys", v.extraKeys)
+                .put("fullscreen", v.fullscreen)
+                .put("coverCutout", v.coverCutout)
+                .put("fontSizeSp", v.fontSizeSp.toDouble())
+                .put("clipboard", v.clipboard.name.lowercase())
+                .put("requirePostQuantum", v.requirePostQuantum)
+                .put("reconnectAttempts", v.reconnectAttempts)
+                .put("bellVibrate", v.bellVibrate)
+                .put("bellFlash", v.bellFlash)
+                .put("keysWhileUnlocked", v.keysWhileUnlocked)
+                .put("engineProcess", v.engineProcess)
+
+        table.add(method("settings.get", Scope.READ, "The app's settings.")) {
+            json(app.uiPrefs.values.value)
+        }
+        table.add(
+            method(
+                "settings.set",
+                Scope.OPERATE,
+                "Changes settings; only the parameters given. engineProcess applies at the next start " +
+                    "(app.restart).",
+                true,
+                str(
+                    "theme",
+                    "A theme id.",
+                    choices = io.github.franticplant.veil.frontend.Palette.ALL.map { it.id },
+                ),
+                bool("extraKeys", "Show the keys bar."),
+                bool("fullscreen", "Fullscreen terminal."),
+                bool("coverCutout", "Fullscreen covers the notch."),
+                str(
+                    "clipboard",
+                    "Remote clipboard policy.",
+                    choices = listOf("ask", "allow", "deny"),
+                ),
+                bool("requirePostQuantum", "Refuse servers without post-quantum key exchange."),
+                int("reconnectAttempts", "Reconnect attempts.", min = 1, max = 12),
+                bool("bellVibrate", "Vibrate on bell."),
+                bool("bellFlash", "Flash on bell."),
+                bool("keysWhileUnlocked", "New keys usable only while unlocked."),
+                bool("engineProcess", "Run the engine in its own process (next start)."),
+            )
+        ) { p ->
+            app.uiPrefs.update { v ->
+                v.copy(
+                    theme = p.stringOr("theme", v.theme),
+                    extraKeys = p.boolOr("extraKeys", v.extraKeys),
+                    fullscreen = p.boolOr("fullscreen", v.fullscreen),
+                    coverCutout = p.boolOr("coverCutout", v.coverCutout),
+                    clipboard =
+                        if (p.has("clipboard"))
+                            io.github.franticplant.veil.frontend.UiPrefs.ClipboardPolicy.valueOf(
+                                p.string("clipboard").uppercase()
+                            )
+                        else v.clipboard,
+                    requirePostQuantum = p.boolOr("requirePostQuantum", v.requirePostQuantum),
+                    reconnectAttempts = p.intOr("reconnectAttempts", v.reconnectAttempts),
+                    bellVibrate = p.boolOr("bellVibrate", v.bellVibrate),
+                    bellFlash = p.boolOr("bellFlash", v.bellFlash),
+                    keysWhileUnlocked = p.boolOr("keysWhileUnlocked", v.keysWhileUnlocked),
+                    engineProcess = p.boolOr("engineProcess", v.engineProcess),
+                )
+            }
+            json(app.uiPrefs.values.value)
         }
     }
 

@@ -1,1 +1,13 @@
-<manifest />
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!--
+          The engine in its own process (ProcessBackend). Not exported: only
+          this app binds to it.
+        -->
+        <service
+            android:name="io.github.franticplant.veil.engine.EngineProcessService"
+            android:exported="false"
+            android:process=":engine" />
+    </application>
+</manifest>
