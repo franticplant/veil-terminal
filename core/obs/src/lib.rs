@@ -140,6 +140,10 @@ pub struct SessionStats {
     pub bytes_to_remote: AtomicU64,
     pub frames_sent: AtomicU64,
     pub frames_acked: AtomicU64,
+    /// The TCP connection: bytes on the wire, and the address reached.
+    pub wire_from_remote: std::sync::Arc<AtomicU64>,
+    pub wire_to_remote: std::sync::Arc<AtomicU64>,
+    peer: Mutex<String>,
 }
 
 impl SessionStats {
@@ -156,11 +160,18 @@ impl SessionStats {
             bytes_to_remote: AtomicU64::new(0),
             frames_sent: AtomicU64::new(0),
             frames_acked: AtomicU64::new(0),
+            wire_from_remote: Default::default(),
+            wire_to_remote: Default::default(),
+            peer: Mutex::new(String::new()),
         }
     }
 
     pub fn set_phase(&self, phase: v1::SessionPhase) {
         self.phase.store(phase as i32, Ordering::Relaxed);
+    }
+
+    pub fn set_peer(&self, peer: String) {
+        *self.peer.lock().unwrap_or_else(|e| e.into_inner()) = peer;
     }
 
     pub fn set_size(&self, cols: u16, rows: u16) {
@@ -189,8 +200,58 @@ impl SessionStats {
             bytes_to_remote: get(&self.bytes_to_remote),
             frames_sent: get(&self.frames_sent),
             frames_acked: get(&self.frames_acked),
+            peer_address: self.peer.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            wire_bytes_from_remote: self.wire_from_remote.load(Ordering::Relaxed),
+            wire_bytes_to_remote: self.wire_to_remote.load(Ordering::Relaxed),
         }
     }
+}
+
+/// This process's own metrics, from /proc/self. Fields it cannot read are 0.
+pub fn process_metrics() -> v1::ProcessMetrics {
+    let mut m = v1::ProcessMetrics {
+        pid: std::process::id(),
+        ..Default::default()
+    };
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        for line in status.lines() {
+            let mut it = line.split_whitespace();
+            match it.next() {
+                Some("VmRSS:") => m.rss_kb = it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+                Some("Threads:") => m.threads = it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+    m.fds = std::fs::read_dir("/proc/self/fd")
+        .map(|d| d.count() as u32)
+        .unwrap_or(0);
+    // /proc/self/stat: fields after the ")" ending the command name; utime and
+    // stime are fields 14 and 15, starttime 22 (1-based, in clock ticks).
+    if let Ok(stat) = std::fs::read_to_string("/proc/self/stat")
+        && let Some(rest) = stat.rsplit_once(')').map(|(_, r)| r)
+    {
+        let f: Vec<&str> = rest.split_whitespace().collect();
+        // rest starts at field 3 (state).
+        let tick_ms = 10u64; // USER_HZ is 100 on Linux and Android.
+        let field = |n: usize| {
+            f.get(n - 3)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        m.cpu_user_ms = field(14) * tick_ms;
+        m.cpu_system_ms = field(15) * tick_ms;
+        let start_ms = field(22) * tick_ms;
+        if let Ok(up) = std::fs::read_to_string("/proc/uptime")
+            && let Some(secs) = up
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse::<f64>().ok())
+        {
+            m.uptime_ms = ((secs * 1000.0) as u64).saturating_sub(start_ms);
+        }
+    }
+    m
 }
 
 #[cfg(test)]
@@ -202,6 +263,15 @@ mod tests {
             after_seq,
             max,
             min_level: min_level as i32,
+        }
+    }
+
+    #[test]
+    fn measures_this_process() {
+        let m = process_metrics();
+        assert_eq!(m.pid, std::process::id());
+        if cfg!(target_os = "linux") {
+            assert!(m.rss_kb > 0 && m.threads > 0 && m.fds > 0, "{m:?}");
         }
     }
 

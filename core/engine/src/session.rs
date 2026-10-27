@@ -168,6 +168,19 @@ async fn run_inner(
         .dial(&spec.host, spec.port)
         .await
         .map_err(|e| format!("cannot connect to {}:{}: {e}", spec.host, spec.port))?;
+    if let Ok(peer) = stream.peer_addr() {
+        prompter.stats.set_peer(peer.to_string());
+        prompter.log(
+            v1::LogLevel::Info,
+            "net",
+            &format!("connected to {}:{} at {peer}", spec.host, spec.port),
+        );
+    }
+    let stream = crate::counted::Counted::new(
+        stream,
+        prompter.stats.wire_from_remote.clone(),
+        prompter.stats.wire_to_remote.clone(),
+    );
 
     let mut preferred = russh::Preferred::DEFAULT.clone();
     if !spec.allow_classical_kex {

@@ -427,6 +427,8 @@ message EngineStats {
   uint64 malformed_requests = 5;
   // The newest log entry's seq (0: none yet).
   uint64 last_log_seq = 6;
+  // The process the engine runs in (in-process: the app's).
+  ProcessMetrics process = 7;
 }
 
 message SessionStats {
@@ -442,6 +444,24 @@ message SessionStats {
   uint64 bytes_to_remote = 9;
   uint64 frames_sent = 10;
   uint64 frames_acked = 11;
+  // The address the connection reached ("100.64.0.5:22"); empty before it is
+  // connected.
+  string peer_address = 12;
+  // Bytes on the TCP connection, SSH framing and encryption included.
+  uint64 wire_bytes_from_remote = 13;
+  uint64 wire_bytes_to_remote = 14;
+}
+
+// A process measuring itself (from /proc/self on Linux and Android).
+message ProcessMetrics {
+  uint32 pid = 1;
+  uint64 uptime_ms = 2;
+  // CPU time used since the process started.
+  uint64 cpu_user_ms = 3;
+  uint64 cpu_system_ms = 4;
+  uint64 rss_kb = 5;
+  uint32 threads = 6;
+  uint32 fds = 7;
 }
 
 enum LogLevel {

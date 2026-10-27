@@ -466,6 +466,12 @@ fn interactive_session_end_to_end() {
     assert_eq!(s.phase, v1::SessionPhase::Open as i32);
     assert_eq!(s.size, Some(v1::TermSize { cols: 60, rows: 12 }));
     assert!(s.bytes_from_remote > 0 && s.bytes_to_remote > 0 && s.frames_sent > 0);
+    // The wire carries more than the payload: framing, encryption, the handshake.
+    assert!(s.wire_bytes_from_remote > s.bytes_from_remote, "{s:?}");
+    assert!(s.wire_bytes_to_remote > s.bytes_to_remote, "{s:?}");
+    assert!(s.peer_address.starts_with("127.0.0.1:"), "{s:?}");
+    let process = stats.process.expect("process metrics");
+    assert!(process.rss_kb > 0 && process.threads > 0, "{process:?}");
     let logs = match f
         .call(client_msg::Body::GetLogs(v1::GetLogs::default()))
         .body

@@ -11,6 +11,7 @@
 //! engine handles blocks in `send`; an engine whose output is not read stops
 //! producing until `recv` drains it.
 
+mod counted;
 mod session;
 mod ssh;
 
@@ -464,6 +465,7 @@ impl Connection {
             requests: self.requests,
             malformed_requests: self.malformed_requests,
             last_log_seq: self.log.last_seq(),
+            process: Some(veil_obs::process_metrics()),
         }
     }
 
