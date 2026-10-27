@@ -30,6 +30,8 @@ usage: veil-ctl [-a HOST:PORT] COMMAND [ARGS]
   screen ID               print a session's screen
   update APK...           upload, verify and install builds (Veil and/or devd)
   scenario NAME [k=v]...  run a built-in scenario (see: call scenario.list)
+  journal                 verify devd's hash-chained journal against the anchor kept here,
+                          then keep the current head as the new anchor
   forget                  drop the pinned devd certificate for the address
 
 The address comes from -a, else $VEIL_ADDR, else the last one paired with.
@@ -142,6 +144,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode, String> {
         }
         "update" => update(&ctx, &rest),
         "scenario" => scenario(&ctx, &rest),
+        "journal" => journal(&mut ctx),
         "forget" => {
             ctx.hosts.pins.remove(&ctx.addr);
             if ctx.hosts.default.as_deref() == Some(&ctx.addr) {
@@ -556,6 +559,87 @@ fn update(ctx: &Ctx, apks: &[String]) -> Result<ExitCode, String> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Checks devd's journal: the chain must verify on the phone, and the entry
+/// recorded as this laptop's anchor last time must still be there with the
+/// same hash (which the phone alone cannot prove: it could have been cut and
+/// re-chained). Then records the current head as the new anchor.
+fn journal(ctx: &mut Ctx) -> Result<ExitCode, String> {
+    let mut c = ctx.connect()?;
+    let v = c
+        .call("journal.verify", json!({}))
+        .map_err(|e| e.to_string())?;
+    if v["ok"].as_bool() != Some(true) {
+        println!("BROKEN chain: {}", v["brokenAt"].as_str().unwrap_or("?"));
+        return Ok(ExitCode::FAILURE);
+    }
+    println!(
+        "chain ok: {} entries (seq {}..{})",
+        v["entries"], v["firstSeq"], v["lastSeq"]
+    );
+    let anchor = ctx
+        .hosts
+        .pins
+        .get(&ctx.addr)
+        .map(|p| p["journalAnchor"].clone())
+        .filter(|a| a.is_object());
+    let mut ok = true;
+    if let Some(a) = anchor {
+        let seq = a["seq"].as_u64().unwrap_or(0);
+        let hash = a["hash"].as_str().unwrap_or("");
+        let first = v["firstSeq"].as_u64().unwrap_or(0);
+        if seq > 0 && seq < first {
+            println!(
+                "anchor seq {seq} is older than the journal's first entry {first} (rotated out); cannot compare"
+            );
+        } else if seq > 0 {
+            let r = c
+                .call(
+                    "devd.logs",
+                    json!({ "after": seq - 1, "max": 1, "kind": "all" }),
+                )
+                .map_err(|e| e.to_string())?;
+            match r["entries"].as_array().and_then(|e| e.first()) {
+                Some(e) if e["seq"].as_u64() == Some(seq) && e["hash"].as_str() == Some(hash) => {
+                    println!("anchor seq {seq} matches: nothing up to it was rewritten");
+                }
+                Some(e) if e["seq"].as_u64() == Some(seq) => {
+                    println!(
+                        "MISMATCH: entry {seq} now has hash {}, the anchor says {hash}: the journal was rewritten",
+                        e["hash"].as_str().unwrap_or("?")
+                    );
+                    ok = false;
+                }
+                _ => {
+                    println!("MISSING: entry {seq} (the anchor) is gone: the journal was cut");
+                    ok = false;
+                }
+            }
+        }
+    } else {
+        println!("no anchor yet for {}; recording one", ctx.addr);
+    }
+    if ok {
+        let head = c
+            .call("journal.head", json!({}))
+            .map_err(|e| e.to_string())?;
+        if let Some(p) = ctx.hosts.pins.get_mut(&ctx.addr) {
+            p["journalAnchor"] =
+                json!({ "seq": head["seq"], "hash": head["hash"], "atMs": now_ms() });
+        }
+        ctx.hosts.save()?;
+        println!(
+            "new anchor: seq {} {}",
+            head["seq"],
+            head["hash"].as_str().unwrap_or("").get(..16).unwrap_or("")
+        );
+    }
+    Ok(if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 fn scenario(ctx: &Ctx, args: &[String]) -> Result<ExitCode, String> {
