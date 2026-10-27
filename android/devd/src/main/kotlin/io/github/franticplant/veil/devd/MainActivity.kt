@@ -77,8 +77,17 @@ class MainActivity : ComponentActivity() {
                                 text = { Text("Status") },
                             )
                             Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Logs") })
+                            Tab(
+                                selected = tab == 2,
+                                onClick = { tab = 2 },
+                                text = { Text("Metrics") },
+                            )
                         }
-                        if (tab == 0) Screen(app) else LogViewer(app)
+                        when (tab) {
+                            0 -> Screen(app)
+                            1 -> LogViewer(app)
+                            else -> MetricsView(app)
+                        }
                     }
                 }
             }

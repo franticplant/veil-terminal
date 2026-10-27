@@ -46,6 +46,7 @@ class DevdService : Service() {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
                 )
                 app.server.start()
+                app.metrics.start()
                 // Resumed after an update: keep the time that was left; else a fresh period.
                 val resumeAt = intent?.getLongExtra(EXTRA_OFF_AT, 0L) ?: 0L
                 schedule(
@@ -84,6 +85,7 @@ class DevdService : Service() {
         app.settings.rememberListener(null)
         handler.removeCallbacks(autoOff)
         app.server.stop()
+        app.metrics.stop()
         app.hooks.unbind()
         app._offAtMs.value = null
         stopForeground(STOP_FOREGROUND_REMOVE)

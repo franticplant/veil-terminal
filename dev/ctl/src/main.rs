@@ -30,6 +30,7 @@ usage: veil-ctl [-a HOST:PORT] COMMAND [ARGS]
   screen ID               print a session's screen
   update APK...           upload, verify and install builds (Veil and/or devd)
   scenario NAME [k=v]...  run a built-in scenario (see: call scenario.list)
+  top [--once]            live RAM/CPU of devd, Veil and its engine, and every connection
   journal                 verify devd's hash-chained journal against the anchor kept here,
                           then keep the current head as the new anchor
   forget                  drop the pinned devd certificate for the address
@@ -145,6 +146,7 @@ fn run(mut args: Vec<String>) -> Result<ExitCode, String> {
         "update" => update(&ctx, &rest),
         "scenario" => scenario(&ctx, &rest),
         "journal" => journal(&mut ctx),
+        "top" => top(&ctx, rest.iter().any(|a| a == "--once")),
         "forget" => {
             ctx.hosts.pins.remove(&ctx.addr);
             if ctx.hosts.default.as_deref() == Some(&ctx.addr) {
@@ -559,6 +561,90 @@ fn update(ctx: &Ctx, apks: &[String]) -> Result<ExitCode, String> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn human(b: f64) -> String {
+    if b < 1024.0 {
+        format!("{b:.0} B")
+    } else if b < 1024.0 * 1024.0 {
+        format!("{:.1} KiB", b / 1024.0)
+    } else {
+        format!("{:.1} MiB", b / 1024.0 / 1024.0)
+    }
+}
+
+/// A live table of devd's metrics sample, refreshed every 2 s (devd samples
+/// at that rate while its listener is on).
+fn top(ctx: &Ctx, once: bool) -> Result<ExitCode, String> {
+    let mut c = ctx.connect()?;
+    loop {
+        let m = c
+            .call("metrics.current", json!({}))
+            .map_err(|e| e.to_string())?;
+        if !once {
+            print!("\x1b[2J\x1b[H");
+        }
+        println!(
+            "{}  engine: {}{}",
+            fmt_time_ms(m["unixMs"].as_u64().unwrap_or(0)),
+            m["engineBackend"].as_str().unwrap_or("-"),
+            if m["veilConnected"].as_bool() == Some(true) {
+                ""
+            } else {
+                "  (Veil not bound: open devd's Metrics tab or call app.start)"
+            }
+        );
+        println!(
+            "\n{:<12} {:>7} {:>10} {:>10} {:>7} {:>8} {:>5}",
+            "PROCESS", "PID", "RSS", "PSS", "CPU%", "THREADS", "FDS"
+        );
+        for p in m["processes"].as_array().into_iter().flatten() {
+            let kb = |k: &str| {
+                p[k].as_i64()
+                    .filter(|v| *v >= 0)
+                    .map(|v| human(v as f64 * 1024.0))
+                    .unwrap_or_else(|| "-".into())
+            };
+            println!(
+                "{:<12} {:>7} {:>10} {:>10} {:>7} {:>8} {:>5}",
+                p["name"].as_str().unwrap_or("?"),
+                p["pid"],
+                kb("rssKb"),
+                kb("pssKb"),
+                p["cpuPct"]
+                    .as_f64()
+                    .map(|v| format!("{v:.1}"))
+                    .unwrap_or_else(|| "-".into()),
+                p["threads"],
+                p["fds"]
+            );
+        }
+        let sessions: Vec<&Value> = m["sessions"].as_array().into_iter().flatten().collect();
+        println!("\n{} connection(s)", sessions.len());
+        for s in sessions {
+            println!(
+                "  #{} {}:{} -> {} {} {}  in {} ({}/s)  out {} ({}/s)",
+                s["id"],
+                s["host"].as_str().unwrap_or(""),
+                s["port"],
+                s["peer"].as_str().unwrap_or(""),
+                s["phase"].as_str().unwrap_or(""),
+                match s["postQuantum"].as_bool() {
+                    Some(true) => "PQ",
+                    Some(false) => "classical",
+                    None => "",
+                },
+                human(s["wireIn"].as_f64().unwrap_or(0.0)),
+                human(s["inBps"].as_f64().unwrap_or(0.0)),
+                human(s["wireOut"].as_f64().unwrap_or(0.0)),
+                human(s["outBps"].as_f64().unwrap_or(0.0)),
+            );
+        }
+        if once {
+            return Ok(ExitCode::SUCCESS);
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
 }
 
 /// Checks devd's journal: the chain must verify on the phone, and the entry

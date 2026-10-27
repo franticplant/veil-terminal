@@ -173,6 +173,39 @@ class DevdMethods(private val app: DevdApp) {
 
         table.add(
             method(
+                "metrics.current",
+                Scope.READ,
+                "The newest sample: devd, Veil's app and engine processes (RAM, CPU %, threads, " +
+                    "fds) and each connection (peer, wire bytes, rates). Sampled every 2 s while the " +
+                    "listener runs.",
+            )
+        ) {
+            app.metrics.latest.value ?: JSONObject().put("unixMs", JSONObject.NULL)
+        }
+
+        table.add(method("metrics.keys", Scope.READ, "Names of the recorded time series.")) {
+            JSONArray(app.metrics.keys())
+        }
+
+        table.add(
+            method(
+                "metrics.history",
+                Scope.READ,
+                "Time series ([unixMs, value] pairs, up to 30 minutes), e.g. veil-engine.rssKb, " +
+                    "veil-app.cpuPct, net.inBps, session.3.outBps.",
+                false,
+                io.github.franticplant.veil.dev.api.strList(
+                    "prefixes",
+                    "Only series starting with these.",
+                ),
+                long("sinceMs", "Only points at or after this time (unix ms).", min = 0),
+            )
+        ) { p ->
+            app.metrics.history(p.stringListOr("prefixes").orEmpty(), p.longOr("sinceMs", 0))
+        }
+
+        table.add(
+            method(
                 "journal.head",
                 Scope.READ,
                 "The journal's newest seq and hash. Keep it: a later journal.verify plus a read of " +

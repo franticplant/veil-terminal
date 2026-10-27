@@ -48,6 +48,7 @@ class AppMethods(private val app: VeilApplication) {
         addOperate()
         addKeys()
         addSettings()
+        addMetrics()
         addLifecycle()
         addScenarios()
     }
@@ -819,6 +820,76 @@ class AppMethods(private val app: VeilApplication) {
             }
             app.sshKeys.delete(p.string("name"))
             null
+        }
+    }
+
+    // ---- metrics ------------------------------------------------------------
+
+    private fun addMetrics() {
+        table.add(
+            method(
+                "metrics.sample",
+                Scope.READ,
+                "One sample of every Veil process (app, engine) and every session's connection: " +
+                    "RAM, CPU time, threads, fds; peer address, wire and payload bytes. devd samples " +
+                    "this into time series.",
+            )
+        ) {
+            val processes =
+                org.json
+                    .JSONArray()
+                    .put(io.github.franticplant.veil.dev.api.ProcSelf.sample("veil-app"))
+            val sessions = org.json.JSONArray()
+            val conn = registry.currentConnection
+            if (conn != null) {
+                val st = engine(3_000) { registry.engineStats() }
+                val p = st.process
+                if (st.hasProcess() && p.pid != android.os.Process.myPid()) {
+                    processes.put(
+                        JSONObject()
+                            .put("name", "veil-engine")
+                            .put("pid", p.pid)
+                            .put("uptimeMs", p.uptimeMs)
+                            .put("cpuMs", p.cpuUserMs + p.cpuSystemMs)
+                            .put("rssKb", p.rssKb)
+                            .put("threads", p.threads)
+                            .put("fds", p.fds)
+                    )
+                }
+                for (s in st.sessionsList) {
+                    val session = registry.get(s.sessionId)
+                    sessions.put(
+                        JSONObject()
+                            .put("id", s.sessionId)
+                            .put("host", s.host)
+                            .put("port", s.port)
+                            .put("peer", s.peerAddress)
+                            .put("phase", Json.phase(s.phaseValue))
+                            .put("ageMs", s.ageMs)
+                            .put("wireIn", s.wireBytesFromRemote)
+                            .put("wireOut", s.wireBytesToRemote)
+                            .put("payloadIn", s.bytesFromRemote)
+                            .put("payloadOut", s.bytesToRemote)
+                            .put("framesSent", s.framesSent)
+                            .put(
+                                "postQuantum",
+                                session?.status?.value?.security?.postQuantum ?: JSONObject.NULL,
+                            )
+                    )
+                }
+            }
+            val uid = android.os.Process.myUid()
+            JSONObject()
+                .put("unixMs", System.currentTimeMillis())
+                .put("engineBackend", registry.backendKind)
+                .put("processes", processes)
+                .put("sessions", sessions)
+                .put(
+                    "uidTraffic",
+                    JSONObject()
+                        .put("rxBytes", android.net.TrafficStats.getUidRxBytes(uid))
+                        .put("txBytes", android.net.TrafficStats.getUidTxBytes(uid)),
+                )
         }
     }
 

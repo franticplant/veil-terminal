@@ -18,6 +18,7 @@ class DevdApp : Application() {
     val notifications by lazy { Notifications(this) }
     val methods by lazy { DevdMethods(this) }
     val server by lazy { Server(this) }
+    val metrics by lazy { Metrics(this) }
 
     internal val _offAtMs = MutableStateFlow<Long?>(null)
 
