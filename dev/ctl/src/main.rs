@@ -606,17 +606,17 @@ fn top(ctx: &Ctx, once: bool) -> Result<ExitCode, String> {
                     .unwrap_or_else(|| "-".into())
             };
             println!(
-                "{:<12} {:>7} {:>10} {:>10} {:>7} {:>8} {:>5}",
+                "{:<12} {:>7} {:>11} {:>11} {:>6} {:>8} {:>5}",
                 p["name"].as_str().unwrap_or("?"),
-                p["pid"],
+                p["pid"].to_string(),
                 kb("rssKb"),
                 kb("pssKb"),
                 p["cpuPct"]
                     .as_f64()
                     .map(|v| format!("{v:.1}"))
                     .unwrap_or_else(|| "-".into()),
-                p["threads"],
-                p["fds"]
+                p["threads"].to_string(),
+                p["fds"].to_string()
             );
         }
         let sessions: Vec<&Value> = m["sessions"].as_array().into_iter().flatten().collect();

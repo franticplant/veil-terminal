@@ -852,6 +852,7 @@ class AppMethods(private val app: VeilApplication) {
                             .put("uptimeMs", p.uptimeMs)
                             .put("cpuMs", p.cpuUserMs + p.cpuSystemMs)
                             .put("rssKb", p.rssKb)
+                            .put("pssKb", if (p.pssKb > 0) p.pssKb else -1)
                             .put("threads", p.threads)
                             .put("fds", p.fds)
                     )

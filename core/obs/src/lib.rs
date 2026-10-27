@@ -223,6 +223,14 @@ pub fn process_metrics() -> v1::ProcessMetrics {
             }
         }
     }
+    if let Ok(rollup) = std::fs::read_to_string("/proc/self/smaps_rollup") {
+        m.pss_kb = rollup
+            .lines()
+            .find(|l| l.starts_with("Pss:"))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+    }
     m.fds = std::fs::read_dir("/proc/self/fd")
         .map(|d| d.count() as u32)
         .unwrap_or(0);

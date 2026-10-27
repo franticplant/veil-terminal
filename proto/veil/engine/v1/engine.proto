@@ -462,6 +462,9 @@ message ProcessMetrics {
   uint64 rss_kb = 5;
   uint32 threads = 6;
   uint32 fds = 7;
+  // Proportional set size: shared pages divided among their users, the
+  // honest memory figure on Android where every app shares zygote pages.
+  uint64 pss_kb = 8;
 }
 
 enum LogLevel {
