@@ -31,6 +31,9 @@ internal class Scenarios(private val app: VeilApplication) {
         /** Bumped when a scenario's steps or report change meaning. */
         const val VERSION = 1
 
+        /** File descriptors or threads a leak-check tolerates gaining (caches, pools). */
+        const val LEAK_SLACK = 8
+
         val ALL =
             linkedMapOf(
                 "connect-echo" to
@@ -43,6 +46,9 @@ internal class Scenarios(private val app: VeilApplication) {
                         "engine's counters.",
                 "reconnect" to
                     "Connect, authenticate and close `count` times (default 5), timing each.",
+                "leak-check" to
+                    "Runs `count` full sessions (default 30: connect, echo, exit) and compares the " +
+                        "process's file descriptors, threads and memory before and after.",
             )
     }
 
@@ -131,6 +137,7 @@ internal class Scenarios(private val app: VeilApplication) {
                             "throughput" ->
                                 throughput(report, setup, opened, p.longOr("bytes", 1_000_000))
                             "reconnect" -> reconnect(report, setup, opened, p.intOr("count", 5))
+                            "leak-check" -> leakCheck(report, setup, opened, p.intOr("count", 30))
                         }
                     } catch (e: Failed) {
                         report.ok = false
@@ -243,6 +250,47 @@ internal class Scenarios(private val app: VeilApplication) {
             }
         }
         r.metrics.put("connectMs", times)
+    }
+
+    private suspend fun leakCheck(
+        r: Report,
+        setup: Setup,
+        opened: MutableList<Session>,
+        count: Int,
+    ) {
+        // One session first, so lazily created things (the engine, thread pools) are not counted.
+        val warm = connect(r, setup, opened, 80, 24, "warm-up ")
+        shellReady(r, warm)
+        exit(r, warm)
+        settle()
+        val before = ProcessStats.now()
+        for (i in 1..count) {
+            val s = connect(r, setup, opened, 80, 24, "#$i ")
+            shellReady(r, s)
+            echoMarker(r, s)
+            exit(r, s)
+            // Forget as we go, as the UI's "close tab" does.
+            registry.forget(s)
+            opened.remove(s)
+        }
+        settle()
+        val after = ProcessStats.now()
+        r.metrics.put("before", before.json()).put("after", after.json()).put("sessions", count)
+        val fdGrowth = after.fds - before.fds
+        val threadGrowth = after.threads - before.threads
+        r.step("no leak") {
+            if (fdGrowth > LEAK_SLACK)
+                throw Failed("file descriptors grew by $fdGrowth over $count sessions")
+            if (threadGrowth > LEAK_SLACK)
+                throw Failed("threads grew by $threadGrowth over $count sessions")
+        }
+    }
+
+    /** Lets finished sessions' resources go (closing sockets, ending tasks) before measuring. */
+    private suspend fun settle() {
+        delay(1500)
+        System.gc()
+        delay(500)
     }
 
     // ---- steps --------------------------------------------------------------
@@ -362,4 +410,25 @@ internal class Scenarios(private val app: VeilApplication) {
     }
 
     private fun nonce() = Random.nextLong(0x1000_0000, 0xffff_ffff).toString(16)
+}
+
+/** File descriptors, threads and memory of this process, from /proc. */
+internal data class ProcessStats(val fds: Int, val threads: Int, val rssKb: Long, val pssKb: Long) {
+    fun json(): JSONObject =
+        JSONObject().put("fds", fds).put("threads", threads).put("rssKb", rssKb).put("pssKb", pssKb)
+
+    companion object {
+        fun now(): ProcessStats {
+            val status =
+                java.io.File("/proc/self/status").readLines().associate {
+                    it.substringBefore(':') to it.substringAfter(':').trim()
+                }
+            return ProcessStats(
+                fds = java.io.File("/proc/self/fd").list()?.size ?: -1,
+                threads = status["Threads"]?.toIntOrNull() ?: -1,
+                rssKb = status["VmRSS"]?.substringBefore(' ')?.toLongOrNull() ?: -1,
+                pssKb = android.os.Debug.getPss(),
+            )
+        }
+    }
 }
