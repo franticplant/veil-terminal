@@ -224,6 +224,7 @@ mod tests {
                     username: "alice".into(),
                     size: Some(v1::TermSize { cols: 80, rows: 24 }),
                     public_keys: vec!["ecdsa-sha2-nistp256 AAAA".into()],
+                    allow_classical_kex: false,
                 })),
             }),
             encode(&v1::EngineMsg {

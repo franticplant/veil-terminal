@@ -153,6 +153,9 @@ message OpenSession {
   // frontend can sign with, tried in order before passwords. The private keys
   // never reach the engine: each signature is a SignRequest.
   repeated string public_keys = 5;
+  // Allow a classical (not post-quantum) key exchange with servers that offer
+  // no hybrid ML-KEM exchange. Off: such servers are refused.
+  bool allow_classical_kex = 6;
 }
 
 message SessionOpened {
@@ -173,6 +176,21 @@ message SessionState {
   uint64 session_id = 1;
   SessionPhase phase = 2;
   string detail = 3;
+  // Set with SESSION_PHASE_OPEN: what the connection negotiated.
+  ConnectionSecurity security = 4;
+}
+
+message ConnectionSecurity {
+  // e.g. "mlkem768x25519-sha256"
+  string kex = 1;
+  // Whether the key exchange is hybrid post-quantum (resists a future
+  // quantum computer decrypting a recording of this session).
+  bool post_quantum = 2;
+  string cipher = 3;
+  // Empty for AEAD ciphers.
+  string mac = 4;
+  // The server's host key algorithm, e.g. "ssh-ed25519".
+  string host_key_algorithm = 5;
 }
 
 enum HostKeyStatus {

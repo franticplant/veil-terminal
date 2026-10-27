@@ -62,6 +62,19 @@ impl Prompter {
         self.log.log(level, component, self.session_id, message);
     }
 
+    /// Reports the session open, with what the connection negotiated.
+    pub async fn open(&self, security: Option<v1::ConnectionSecurity>) {
+        self.stats.set_phase(v1::SessionPhase::Open);
+        self.log(v1::LogLevel::Info, "session", "OPEN");
+        self.event(v1::engine_msg::Body::SessionState(v1::SessionState {
+            session_id: self.session_id,
+            phase: v1::SessionPhase::Open as i32,
+            detail: String::new(),
+            security,
+        }))
+        .await;
+    }
+
     pub async fn state(&self, phase: v1::SessionPhase, detail: &str) {
         self.stats.set_phase(phase);
         let name = phase.as_str_name().trim_start_matches("SESSION_PHASE_");
@@ -75,6 +88,7 @@ impl Prompter {
             session_id: self.session_id,
             phase: phase as i32,
             detail: detail.to_string(),
+            security: None,
         }))
         .await;
     }
@@ -116,6 +130,8 @@ pub(crate) struct Spec {
     pub host: String,
     pub port: u16,
     pub user: String,
+    /// Accept a classical key exchange when the server has no post-quantum one.
+    pub allow_classical_kex: bool,
     /// Public keys the frontend can sign with, tried before passwords.
     pub keys: Vec<russh::keys::PublicKey>,
     pub cols: u16,
@@ -153,15 +169,36 @@ async fn run_inner(
         .await
         .map_err(|e| format!("cannot connect to {}:{}: {e}", spec.host, spec.port))?;
 
+    let mut preferred = russh::Preferred::DEFAULT.clone();
+    if !spec.allow_classical_kex {
+        // Post-quantum only: the hybrid ML-KEM exchange plus the extension
+        // markers (strict kex, ext-info) that are not key exchanges.
+        preferred.kex = std::borrow::Cow::Owned(
+            preferred
+                .kex
+                .iter()
+                .filter(|k| {
+                    let n = k.as_ref();
+                    ssh::is_post_quantum(n)
+                        || n.starts_with("ext-info")
+                        || n.starts_with("kex-strict")
+                })
+                .cloned()
+                .collect(),
+        );
+    }
     let config = Arc::new(client::Config {
         inactivity_timeout: None,
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 4,
         nodelay: true,
+        preferred,
         ..Default::default()
     });
     let refusal = Arc::new(Mutex::new(None));
+    let negotiated = Arc::new(Mutex::new(None));
     let handler = Client {
+        negotiated: negotiated.clone(),
         prompter: prompter.clone(),
         host: spec.host.clone(),
         port: spec.port,
@@ -172,7 +209,28 @@ async fn run_inner(
         Ok(h) => h,
         Err(e) => {
             let refused = refusal.lock().unwrap_or_else(|e| e.into_inner()).take();
-            return Err(refused.unwrap_or_else(|| format!("SSH handshake failed: {e}")));
+            if let Some(why) = refused {
+                return Err(why);
+            }
+            if let russh::Error::NoCommonAlgo {
+                kind: russh::AlgorithmKind::Kex,
+                theirs,
+                ..
+            } = &e
+                && !spec.allow_classical_kex
+            {
+                return Err(format!(
+                    "the server offers no post-quantum key exchange (it offers: {}); allow \
+                     classical key exchange for this host to connect anyway",
+                    theirs
+                        .iter()
+                        .filter(|k| !k.starts_with("ext-info") && !k.starts_with("kex-strict"))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            return Err(format!("SSH handshake failed: {e}"));
         }
     };
 
@@ -203,7 +261,8 @@ async fn run_inner(
         .request_shell(true)
         .await
         .map_err(err("shell request failed"))?;
-    prompter.state(v1::SessionPhase::Open, "").await;
+    let security = negotiated.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    prompter.open(security).await;
 
     let mut term = Terminal::new(spec.cols, spec.rows);
     let mut sent: u64 = 0;

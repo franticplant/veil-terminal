@@ -61,6 +61,13 @@ pub(crate) struct Client {
     pub known_hosts: Option<PathBuf>,
     /// Why the key was refused, for the session's closing detail.
     pub refusal: Arc<Mutex<Option<String>>>,
+    /// What the key exchange negotiated, once it is done.
+    pub negotiated: Arc<Mutex<Option<v1::ConnectionSecurity>>>,
+}
+
+/// Key exchanges that are hybrid post-quantum.
+pub(crate) fn is_post_quantum(kex: &str) -> bool {
+    kex.starts_with("mlkem") || kex.starts_with("sntrup")
 }
 
 impl Client {
@@ -73,6 +80,41 @@ impl Client {
 
 impl client::Handler for Client {
     type Error = russh::Error;
+
+    async fn kex_done(
+        &mut self,
+        _shared_secret: Option<&[u8]>,
+        names: &russh::Names,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        let kex = names.kex.as_ref().to_string();
+        let cipher = names.cipher.as_ref().to_string();
+        let mac = names.client_mac.as_ref().to_string();
+        let security = v1::ConnectionSecurity {
+            post_quantum: is_post_quantum(&kex),
+            kex,
+            mac: if mac == "none" { String::new() } else { mac },
+            cipher,
+            host_key_algorithm: names.key.to_string(),
+        };
+        self.prompter.log(
+            v1::LogLevel::Info,
+            "ssh",
+            &format!(
+                "key exchange {} ({}), cipher {}, host key {}",
+                security.kex,
+                if security.post_quantum {
+                    "post-quantum hybrid"
+                } else {
+                    "classical"
+                },
+                security.cipher,
+                security.host_key_algorithm
+            ),
+        );
+        *self.negotiated.lock().unwrap_or_else(|e| e.into_inner()) = Some(security);
+        Ok(())
+    }
 
     async fn check_server_key(
         &mut self,

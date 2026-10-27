@@ -319,6 +319,7 @@ impl Connection {
                                 session_id,
                                 phase: v1::SessionPhase::Closed as i32,
                                 detail: "closed".into(),
+                                security: None,
                             })),
                         };
                         let _ = out.send(encode(&msg)).await;
@@ -429,6 +430,7 @@ impl Connection {
             host: open.host,
             port,
             user: open.username,
+            allow_classical_kex: open.allow_classical_kex,
             keys,
             cols,
             rows,

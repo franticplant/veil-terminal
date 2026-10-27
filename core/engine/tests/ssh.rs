@@ -142,7 +142,24 @@ async fn start_server() -> u16 {
 
 /// Starts a server that also accepts `key` for alice.
 async fn start_server_with(key: Option<PublicKey>) -> u16 {
+    start_server_full(key, false).await
+}
+
+/// `classical_only`: the server offers no post-quantum key exchange.
+async fn start_server_full(key: Option<PublicKey>, classical_only: bool) -> u16 {
+    let mut preferred = russh::Preferred::DEFAULT.clone();
+    if classical_only {
+        preferred.kex = std::borrow::Cow::Owned(
+            preferred
+                .kex
+                .iter()
+                .filter(|k| !k.as_ref().starts_with("mlkem"))
+                .cloned()
+                .collect(),
+        );
+    }
     let config = Arc::new(server::Config {
+        preferred,
         keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap()],
         auth_rejection_time: Duration::from_millis(10),
         auth_rejection_time_initial: Some(Duration::from_millis(0)),
@@ -177,6 +194,8 @@ struct Frontend {
     screen: Vec<String>,
     /// FrameAck requests whose replies have not arrived yet.
     acks: std::collections::HashSet<u64>,
+    /// Sent with OpenSession.
+    allow_classical: bool,
 }
 
 impl Frontend {
@@ -193,6 +212,7 @@ impl Frontend {
             events: Vec::new(),
             screen: Vec::new(),
             acks: Default::default(),
+            allow_classical: false,
         };
         let ack = f.call(client_msg::Body::Hello(v1::Hello {
             protocol_version: 1,
@@ -330,6 +350,7 @@ impl Frontend {
             username: "alice".into(),
             size: Some(v1::TermSize { cols: 40, rows: 10 }),
             public_keys,
+            allow_classical_kex: self.allow_classical,
         }));
         match reply.body {
             Some(engine_msg::Body::SessionOpened(o)) => o.session_id,
@@ -415,7 +436,11 @@ fn interactive_session_end_to_end() {
     let p = f.auth_prompt();
     assert!(p.retry);
     f.answer_password(&p, PASSWORD);
-    f.state(v1::SessionPhase::Open);
+    let open = f.state(v1::SessionPhase::Open);
+    let security = open.security.expect("security with OPEN");
+    assert_eq!(security.kex, "mlkem768x25519-sha256");
+    assert!(security.post_quantum);
+    assert_eq!(security.host_key_algorithm, "ssh-ed25519");
 
     f.wait_screen("welcome");
     f.input(session, "echo hi");
@@ -586,6 +611,7 @@ fn bad_requests_are_refused() {
             username: "a".into(),
             size: Some(v1::TermSize { cols: 80, rows: 24 }),
             public_keys: vec![],
+            allow_classical_kex: false,
         },
         v1::OpenSession {
             host: "h".into(),
@@ -593,6 +619,7 @@ fn bad_requests_are_refused() {
             username: "a".into(),
             size: Some(v1::TermSize { cols: 80, rows: 24 }),
             public_keys: vec![],
+            allow_classical_kex: false,
         },
         v1::OpenSession {
             host: "h".into(),
@@ -603,6 +630,7 @@ fn bad_requests_are_refused() {
                 rows: 24,
             }),
             public_keys: vec![],
+            allow_classical_kex: false,
         },
     ] {
         let reply = f.call(client_msg::Body::OpenSession(open));
@@ -716,5 +744,44 @@ fn key_authentication_signs_through_the_frontend() {
     assert_eq!(p.session_id, second);
     f.answer_password(&p, PASSWORD);
     f.state(v1::SessionPhase::Open);
+    drop(rt);
+}
+
+#[test]
+fn classical_key_exchange_is_refused_unless_allowed() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let port = rt.block_on(start_server_full(None, true));
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Frontend::new(dir.path());
+
+    f.open(port);
+    let closed = f.state(v1::SessionPhase::Closed);
+    assert!(
+        closed.detail.contains("no post-quantum key exchange"),
+        "{}",
+        closed.detail
+    );
+
+    f.allow_classical = true;
+    let session = f.open(port);
+    let p = match f
+        .wait_for("host key prompt", |m| {
+            matches!(m.body, Some(engine_msg::Body::HostKeyPrompt(_)))
+        })
+        .body
+    {
+        Some(engine_msg::Body::HostKeyPrompt(p)) => p,
+        _ => unreachable!(),
+    };
+    f.call(client_msg::Body::HostKeyAnswer(v1::HostKeyAnswer {
+        session_id: session,
+        prompt_id: p.prompt_id,
+        decision: v1::HostKeyDecision::AcceptOnce as i32,
+    }));
+    let p = f.auth_prompt();
+    f.answer_password(&p, PASSWORD);
+    let open = f.state(v1::SessionPhase::Open);
+    let security = open.security.unwrap();
+    assert!(!security.post_quantum, "{security:?}");
     drop(rt);
 }
