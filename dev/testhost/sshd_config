@@ -1,8 +1,8 @@
 # The listen address comes from scripts/testhost (-o ListenAddress=...).
 PasswordAuthentication yes
 KbdInteractiveAuthentication yes
-# A disposable box: root may log in (same per-run password) to install things. setuid
-# binaries (sudo, su) do not elevate in this rootless setup yet.
+# A disposable box: root may log in (same per-run password) to install things. Under gVisor
+# (rootless) setuid binaries such as sudo do not elevate; under crun they do.
 PermitRootLogin yes
 AllowUsers tester root
 PrintMotd yes

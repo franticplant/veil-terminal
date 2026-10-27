@@ -153,8 +153,10 @@ never leaves Keystore.
   each start; `scripts/testhost password` prints it.
 - **Host keys.** They stay the same across rebuilds (the
   `veil-testhost-keys` volume).
-- **Installing things.** sudo does not elevate in this rootless container,
-  so log in as root instead.
+- **Installing things.** Under gVisor, sudo does not elevate (rootless
+  gVisor ignores setuid bits), so log in as root instead. Under crun
+  (`VEIL_TESTHOST_RUNTIME=crun`), `sudo` works for tester with the same
+  password, at the price of gVisor's isolation.
 
 **Through Tailmesh, use the laptop's MagicDNS name**, for example
 `fedora.<tailnet>.ts.net`, not its `100.x` address. With several tailnets,
