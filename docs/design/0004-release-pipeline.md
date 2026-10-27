@@ -110,6 +110,8 @@ Pushing a tag `vX.Y.Z` does the following:
    attestation and an SBOM attestation over every file (Sigstore, through
    `actions/attest`).
 7. **Publish,** in a separate job that has no signing secrets:
+   - it waits for CI's result on the tagged commit and publishes nothing
+     unless CI passed;
    - checksums and attestations are verified again after the artifact round
      trip, pinned to this workflow;
    - the signing certificate is verified independently, with the runner's

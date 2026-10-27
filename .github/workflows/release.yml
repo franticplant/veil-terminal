@@ -171,7 +171,30 @@ jobs:
     permissions:
       contents: write
       attestations: read
+      actions: read # CI's result for the tagged commit
     steps:
+      # The release runs its own Rust tests and release checks, but not CI's
+      # Kotlin tests and lint: publish only a commit CI passed. When the tag
+      # and main are pushed together, CI is still running; wait for it.
+      - name: Require CI to have passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ needs.build.outputs.sha }}
+        run: |
+          for _ in $(seq 1 60); do
+            result=$(gh run list -w CI -c "$SHA" -e push -L 1 --json status,conclusion \
+              --jq '.[0] | "\(.status) \(.conclusion)"')
+            echo "CI on $SHA: ${result:-no run yet}"
+            case "$result" in
+              "completed success") exit 0 ;;
+              completed*) echo "::error::CI did not pass on $SHA; not publishing"; exit 1 ;;
+            esac
+            sleep 30
+          done
+          echo "::error::CI on $SHA did not finish in 30 minutes; not publishing"
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TAG }}
