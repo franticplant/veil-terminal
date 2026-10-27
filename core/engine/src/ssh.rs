@@ -65,6 +65,11 @@ pub(crate) struct Client {
     pub negotiated: Arc<Mutex<Option<v1::ConnectionSecurity>>>,
 }
 
+/// Ciphers that carry their own authentication (no separate MAC).
+fn is_aead(cipher: &str) -> bool {
+    cipher.contains("poly1305") || cipher.contains("gcm")
+}
+
 /// Key exchanges that are hybrid post-quantum.
 pub(crate) fn is_post_quantum(kex: &str) -> bool {
     kex.starts_with("mlkem") || kex.starts_with("sntrup")
@@ -93,7 +98,12 @@ impl client::Handler for Client {
         let security = v1::ConnectionSecurity {
             post_quantum: is_post_quantum(&kex),
             kex,
-            mac: if mac == "none" { String::new() } else { mac },
+            // AEAD ciphers authenticate themselves; a negotiated MAC is unused.
+            mac: if mac == "none" || is_aead(&cipher) {
+                String::new()
+            } else {
+                mac
+            },
             cipher,
             host_key_algorithm: names.key.to_string(),
         };

@@ -253,6 +253,7 @@ class AppMethods(private val app: VeilApplication) {
                 long("after", "Return entries with seq greater than this (default 0).", min = 0),
                 int("max", "At most this many entries (default 200).", min = 1, max = 1000),
                 str("level", "Minimum level.", choices = listOf("debug", "info", "warn", "error")),
+                str("grep", "Only entries containing this text (case-insensitive)."),
             )
         ) { p ->
             val level =
@@ -262,9 +263,21 @@ class AppMethods(private val app: VeilApplication) {
                     "error" -> LogLevel.LOG_LEVEL_ERROR
                     else -> LogLevel.LOG_LEVEL_DEBUG
                 }
-            Json.logs(
-                engine { registry.engineLogs(p.longOr("after", 0), p.intOr("max", 200), level) }
-            )
+            val out =
+                Json.logs(
+                    engine { registry.engineLogs(p.longOr("after", 0), p.intOr("max", 200), level) }
+                )
+            if (p.has("grep")) {
+                val needle = p.string("grep")
+                val all = out.getJSONArray("entries")
+                val kept = JSONArray()
+                for (i in 0 until all.length()) {
+                    val e = all.getJSONObject(i)
+                    if (e.optString("message").contains(needle, ignoreCase = true)) kept.put(e)
+                }
+                out.put("entries", kept)
+            }
+            out
         }
 
         table.add(
