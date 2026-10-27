@@ -14,7 +14,7 @@ rustls = { version = "0.23.46", default-features = false, features = ["ring", "s
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
 ring = "0.17.14"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
-base64 = "0.22.1"
+base64 = "0.23.1"
 
 [lints]
 workspace = true
