@@ -50,7 +50,10 @@ Android needs a person for the first install of each package.
      port to `127.0.0.1:7390` (with Tailmesh: an inbound listener). Limit
      who can reach that port with tailnet ACLs.
 
-   devd never listens on all interfaces.
+   devd never listens on all interfaces. Each interface, and loopback, has
+   its own switch. devd shows whether each address is listening, the
+   interface is down, or the bind failed. After devd updates itself, it
+   switches the listener back on with the time that was left.
 4. Pair:
 
    ```sh
@@ -96,6 +99,68 @@ Android needs a person for the first install of each package.
   `versionCode`. Who may upload (transport authentication) and what may
   install (APK signature) are separate checks.
 
+## Logs and the journal
+
+devd keeps two logs in one persistent, hash-chained journal:
+
+- **What it did.** Listener, pairing, updates and hooks.
+- **Every API call.** Client, method, parameter names (never values),
+  outcome, duration, and the listener and peer addresses.
+
+Each entry stores the previous entry's hash and its own SHA-256. Editing or
+deleting an entry in the middle breaks the chain, and `journal.verify`
+reports where.
+
+The phone alone cannot tell when the newest entries were cut off and the
+chain rebuilt. `veil-ctl journal` covers that case:
+
+1. It checks the chain.
+2. It checks that the entry it recorded last time (its *anchor*) is still
+   there with the same hash.
+3. It records the current head as the new anchor.
+
+On the phone, devd's **Logs** tab reads the journal, Veil's app log and the
+engine log. It highlights syntax, searches, filters by level and component,
+follows new entries, expands an entry to every field, and shows the chain's
+state.
+
+## Keys
+
+Veil logs in with ECDSA P-256 keys kept in Android Keystore. They live in
+StrongBox when the phone has it, otherwise in the TEE, and the private key
+never leaves Keystore.
+
+- **How a login is signed.** The engine never sees the key. When a server
+  accepts the key, the engine asks the app's signer to sign. The signer
+  checks that the bytes are exactly a public-key login for that user and
+  key, and refuses anything else.
+- **On the phone.** Under Hosts → Keys you can create a key, copy its public
+  key into the server's `~/.ssh/authorized_keys`, and choose it in the
+  host's settings.
+- **From the laptop.** The methods are `keys.list`, `keys.create` and
+  `keys.delete`. `sessions.open`, `profiles.save` and `scenario.run` take a
+  `key=NAME` parameter.
+
+## Test host
+
+`scripts/testhost start ADDRESS` runs a disposable sshd.
+
+- **Runtime.** It runs under gVisor when runsc is installed, using the
+  host's network directly (hostinet), so sshd binds ADDRESS itself and no
+  port forward sits in between. `VEIL_TESTHOST_RUNTIME=crun` uses plain
+  crun.
+- **Accounts.** The users are `tester` and `root`. The password is new on
+  each start; `scripts/testhost password` prints it.
+- **Host keys.** They stay the same across rebuilds (the
+  `veil-testhost-keys` volume).
+- **Installing things.** sudo does not elevate in this rootless container,
+  so log in as root instead.
+
+**Through Tailmesh, use the laptop's MagicDNS name**, for example
+`fedora.<tailnet>.ts.net`, not its `100.x` address. With several tailnets,
+Tailmesh gives apps synthetic addresses, and a raw `100.x` address does not
+lead to the laptop.
+
 ## Daily loop
 
 ```sh
@@ -104,6 +169,8 @@ veil-ctl update dist/veil-<version>-dev.apk
 veil-ctl status                    # devd, packages, Veil process and engine
 veil-ctl scenario connect-echo host=<test host> user=<user> password=<test password>
 veil-ctl logs engine -f            # or: logs app, logs devd
+veil-ctl journal                   # check devd's journal chain and anchor
+veil-ctl call app.exits            # why recent Veil processes ended (crash, ANR, update, ...)
 ```
 
 The address is remembered from `pair`, or comes from `-a` or `$VEIL_ADDR`.

@@ -5,6 +5,20 @@ design runs SSH, terminal parsing and other remote-facing code in separate compa
 pKVM-protected Microdroid VM, with networking, VM control, credentials and the UI split across
 separate Android identities. See [docs/design/0000-bootstrap-proposal.md](docs/design/0000-bootstrap-proposal.md).
 
+What works today:
+- SSH sessions, with password, keyboard-interactive or key login. Keys are
+  ECDSA P-256 in Android Keystore or StrongBox, and the engine never sees
+  them. Host keys are trust-on-first-use; a changed key is refused.
+- A terminal for full-screen programs:
+  - 256 and true colors, mouse reporting, bracketed paste;
+  - copy-only OSC 52, asked first;
+  - scrollback, pinch to change the text size;
+  - fullscreen that can cover the notch, all orientations;
+  - themes, including AMOLED black.
+- Sessions that keep running in the background.
+- A typed development API (devd + veil-ctl) for driving the phone from a
+  laptop.
+
 It is built incrementally: every stage is an APK you can install and use, and authority moves
 behind stronger boundaries over time. Today it is a skeleton: the UI talks to the Rust engine
 through the engine protocol, in one process.
