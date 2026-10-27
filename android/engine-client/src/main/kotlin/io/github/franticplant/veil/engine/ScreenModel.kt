@@ -69,12 +69,12 @@ class ScreenModel {
     }
 
     /**
-     * The screen as plain text, one string per row, trailing blanks trimmed. A wide character
-     * occupies its first cell; its second cell adds nothing.
+     * The screen as cells: per row, the text in each column; "" for the second column of a wide
+     * character, null for a column no run covers (blank).
      */
-    fun text(): List<String> = lines.map { row ->
-        if (row == null) return@map ""
+    fun cells(): List<Array<String?>> = lines.map { row ->
         val cells = arrayOfNulls<String>(cols)
+        if (row == null) return@map cells
         for (run in row.runsList) {
             val wide = run.flags and RunFlag.RUN_FLAG_WIDE_VALUE != 0
             val perCell = if (wide) 2 else 1
@@ -95,8 +95,15 @@ class ScreenModel {
                 if (wide && run.col + 1 < cols) cells[run.col + 1] = ""
             }
         }
-        buildString { for (c in cells) append(c ?: " ") }.trimEnd()
+        cells
     }
+
+    /**
+     * The screen as plain text, one string per row, trailing blanks trimmed. A wide character
+     * occupies its first cell; its second cell adds nothing.
+     */
+    fun text(): List<String> =
+        cells().map { row -> buildString { for (c in row) append(c ?: " ") }.trimEnd() }
 
     private fun validate(frame: Frame) {
         fun bad(msg: String): Nothing = throw InvalidFrameException(msg)

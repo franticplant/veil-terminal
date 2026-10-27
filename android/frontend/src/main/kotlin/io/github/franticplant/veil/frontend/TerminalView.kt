@@ -160,6 +160,7 @@ class TerminalView(context: Context) : View(context) {
                 )
             }
         }
+        drawSelection(canvas)
         drawCursor(canvas, screen)
     }
 
@@ -322,7 +323,17 @@ class TerminalView(context: Context) : View(context) {
                 }
 
                 override fun onLongPress(e: MotionEvent) {
-                    if (!scaling) showKeyboard()
+                    if (scaling) return
+                    // Long press selects the word under the finger; dragging extends it.
+                    val cell = cellAt(e.x, e.y)
+                    val (from, to) = wordAt(cell)
+                    selAnchor = from
+                    selStart = from
+                    selEnd = to
+                    selecting = true
+                    performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                    onSelectionChanged?.invoke(true)
+                    invalidate()
                 }
 
                 override fun onScroll(
@@ -346,6 +357,28 @@ class TerminalView(context: Context) : View(context) {
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (event.isFromSource(InputDevice.SOURCE_MOUSE)) return onMouse(event)
+        if (selecting) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_MOVE -> {
+                    val cell = cellAt(event.x, event.y)
+                    val a = selAnchor ?: cell
+                    if (before(cell, a)) {
+                        selStart = cell
+                        selEnd = a
+                    } else {
+                        selStart = a
+                        selEnd = cell
+                    }
+                    invalidate()
+                    return true
+                }
+                MotionEvent.ACTION_UP,
+                MotionEvent.ACTION_CANCEL -> {
+                    selecting = false
+                    return true
+                }
+            }
+        }
         if (event.actionMasked == MotionEvent.ACTION_DOWN) {
             scrollRemainder = 0f
             scaling = false
@@ -434,6 +467,92 @@ class TerminalView(context: Context) : View(context) {
         return super.onGenericMotionEvent(e)
     }
 
+    // ---- Selection ----------------------------------------------------------
+
+    /** Called when a selection appears (true) or goes away (false). */
+    var onSelectionChanged: ((Boolean) -> Unit)? = null
+
+    private var selecting = false
+    private var selAnchor: Pair<Int, Int>? = null
+    private var selStart: Pair<Int, Int>? = null
+    private var selEnd: Pair<Int, Int>? = null
+
+    val hasSelection: Boolean
+        get() = selStart != null
+
+    private fun before(a: Pair<Int, Int>, b: Pair<Int, Int>) =
+        a.second < b.second || (a.second == b.second && a.first < b.first)
+
+    private fun cellsNow(): List<Array<String?>> =
+        session?.let { synchronized(it.screen) { it.screen.cells() } } ?: emptyList()
+
+    /**
+     * The word around [cell] (col, row): runs of non-blank characters, stopping at brackets and
+     * quotes.
+     */
+    private fun wordAt(cell: Pair<Int, Int>): Pair<Pair<Int, Int>, Pair<Int, Int>> {
+        val row = cellsNow().getOrNull(cell.second) ?: return cell to cell
+        fun isWord(c: String?) = c != null && c.isNotBlank() && c !in WORD_STOPS
+        if (!isWord(row.getOrNull(cell.first))) return cell to cell
+        var a = cell.first
+        var b = cell.first
+        while (a > 0 && (isWord(row[a - 1]) || row[a - 1] == "")) a--
+        while (b < row.size - 1 && (isWord(row[b + 1]) || row[b + 1] == "")) b++
+        return (a to cell.second) to (b to cell.second)
+    }
+
+    /** The selected text, lines joined with newlines, trailing blanks trimmed; null if none. */
+    fun selectedText(): String? {
+        val s = selStart ?: return null
+        val e = selEnd ?: return null
+        val cells = cellsNow()
+        val out = StringBuilder()
+        for (r in s.second..e.second) {
+            val row = cells.getOrNull(r) ?: continue
+            val from = if (r == s.second) s.first else 0
+            val to = if (r == e.second) e.first else row.size - 1
+            val line = buildString {
+                for (c in from..minOf(to, row.size - 1)) append(row[c] ?: " ")
+            }
+            out.append(line.trimEnd())
+            if (r != e.second) out.append('\n')
+        }
+        return out.toString()
+    }
+
+    fun selectAll() {
+        val cells = cellsNow()
+        if (cells.isEmpty()) return
+        selStart = 0 to 0
+        selEnd = (cells[0].size - 1).coerceAtLeast(0) to cells.size - 1
+        onSelectionChanged?.invoke(true)
+        invalidate()
+    }
+
+    fun clearSelection() {
+        if (selStart == null) return
+        selStart = null
+        selEnd = null
+        selAnchor = null
+        selecting = false
+        onSelectionChanged?.invoke(false)
+        invalidate()
+    }
+
+    private fun drawSelection(canvas: Canvas) {
+        val s = selStart ?: return
+        val e = selEnd ?: return
+        val cols = (width / cellW).toInt()
+        bgPaint.color = palette.cursor
+        bgPaint.alpha = 90
+        for (r in s.second..e.second) {
+            val from = if (r == s.second) s.first else 0
+            val to = if (r == e.second) e.first else cols - 1
+            canvas.drawRect(from * cellW, r * cellH, (to + 1) * cellW, (r + 1) * cellH, bgPaint)
+        }
+        bgPaint.alpha = 255
+    }
+
     fun showKeyboard() {
         requestFocus()
         context.getSystemService(InputMethodManager::class.java).showSoftInput(this, 0)
@@ -443,6 +562,7 @@ class TerminalView(context: Context) : View(context) {
 
     /** Sends [bytes] to the session. */
     fun send(bytes: ByteArray) {
+        clearSelection()
         session?.input(bytes)
     }
 
@@ -572,5 +692,10 @@ class TerminalView(context: Context) : View(context) {
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    companion object {
+        private val WORD_STOPS =
+            setOf("(", ")", "[", "]", "{", "}", "<", ">", "\"", "'", "`", "|", ",", ";", "=")
     }
 }

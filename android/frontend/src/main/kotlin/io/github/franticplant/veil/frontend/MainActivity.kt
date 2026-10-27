@@ -448,6 +448,7 @@ private fun TerminalScreen(
     val ui by prefs.values.collectAsState()
     val context = LocalContext.current
     var offer by remember { mutableStateOf<ClipboardOffer?>(null) }
+    var selecting by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(false) }
     if (settings) SettingsDialog(prefs) { settings = false }
 
@@ -475,6 +476,7 @@ private fun TerminalScreen(
                         }
                         onFontSizeChanged = { size -> prefs.update { it.copy(fontSizeSp = size) } }
                         onPasteRequest = { pasteClipboard(ctx, this) }
+                        onSelectionChanged = { selecting = it }
                     }
                 },
                 update = { v ->
@@ -489,6 +491,41 @@ private fun TerminalScreen(
                     v.palette = Palette.byId(ui.theme)
                 },
             )
+            if (selecting) {
+                val palette = LocalPalette.current
+                Row(
+                    Modifier.align(Alignment.TopCenter)
+                        .padding(8.dp)
+                        .background(Color(palette.chromeActive), MaterialTheme.shapes.medium)
+                        .padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(
+                        onClick = {
+                            view?.selectedText()?.let { text ->
+                                context
+                                    .getSystemService(ClipboardManager::class.java)
+                                    .setPrimaryClip(ClipData.newPlainText("terminal", text))
+                                Toast.makeText(
+                                        context,
+                                        "Copied ${text.length} characters",
+                                        Toast.LENGTH_SHORT,
+                                    )
+                                    .show()
+                            }
+                            view?.clearSelection()
+                        }
+                    ) {
+                        Text("Copy", color = Color(palette.chromeText))
+                    }
+                    TextButton(onClick = { view?.selectAll() }) {
+                        Text("All", color = Color(palette.chromeText))
+                    }
+                    TextButton(onClick = { view?.clearSelection() }) {
+                        Text("✕", color = Color(palette.chromeText))
+                    }
+                }
+            }
             if (!ui.extraKeys) {
                 // The keys bar is hidden: a small handle brings it back.
                 Box(
