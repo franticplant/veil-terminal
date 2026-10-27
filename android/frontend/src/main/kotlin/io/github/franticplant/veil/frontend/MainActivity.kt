@@ -244,7 +244,17 @@ private fun SessionTabs(
                     // The remote's title (sanitized by the engine), else where the session goes.
                     val v by s.screenVersion.collectAsState()
                     val title = remember(v) { synchronized(s.screen) { s.screen.title } }
-                    Text(title.ifBlank { s.target.displayName }.take(32), maxLines = 1)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(title.ifBlank { s.target.displayName }.take(32), maxLines = 1)
+                        status.security?.let { sec ->
+                            Text(
+                                if (sec.postQuantum) " PQ" else " classical",
+                                fontSize = 10.sp,
+                                color =
+                                    if (sec.postQuantum) Color(0xFF98C379) else Color(0xFFE5C07B),
+                            )
+                        }
+                    }
                 },
                 leadingIcon = {
                     val color =
@@ -287,7 +297,10 @@ private fun HostsScreen(host: EngineHost, profiles: Profiles, onConnect: (Target
             TextButton(onClick = { settings = true }) { Text("Settings") }
         }
         if (settings) SettingsDialog(host.uiPrefs) { settings = false }
-        if (keysOpen) KeysDialog(host.sshKeys) { keysOpen = false }
+        if (keysOpen)
+            KeysDialog(host.sshKeys, host.uiPrefs.values.value.keysWhileUnlocked) {
+                keysOpen = false
+            }
         if (knownHosts) KnownHostsDialog(host) { knownHosts = false }
         // Quick connect: user@host[:port]; remembered as a profile.
         var quick by remember { mutableStateOf("") }
@@ -391,6 +404,7 @@ private fun ProfileDialog(
     var keyId by remember { mutableStateOf(initial?.keyId ?: "") }
     var startup by remember { mutableStateOf(initial?.startup ?: "") }
     var reconnect by remember { mutableStateOf(initial?.autoReconnect ?: false) }
+    var classical by remember { mutableStateOf(initial?.allowClassicalKex ?: false) }
     val allKeys by keys.keys.collectAsState()
     val portNum = port.toIntOrNull()
     val valid =
@@ -462,6 +476,12 @@ private fun ProfileDialog(
                     singleLine = true,
                 )
                 SettingSwitch("Reconnect when the connection drops", reconnect) { reconnect = it }
+                SettingSwitch(
+                    "Allow classical key exchange (servers without post-quantum)",
+                    classical,
+                ) {
+                    classical = it
+                }
             }
         },
         confirmButton = {
@@ -477,6 +497,7 @@ private fun ProfileDialog(
                             keyId,
                             startup.trim(),
                             reconnect,
+                            classical,
                         )
                     )
                 },
@@ -515,7 +536,12 @@ private fun TerminalScreen(
     var settings by remember { mutableStateOf(false) }
     if (settings) SettingsDialog(prefs) { settings = false }
 
-    LaunchedEffect(session) { session.bell.collect { view?.bell() } }
+    LaunchedEffect(session) {
+        session.bell.collect {
+            val p = prefs.values.value
+            view?.bell(flash = p.bellFlash, vibrate = p.bellVibrate)
+        }
+    }
 
     // Clipboard offers from the remote (OSC 52), under the user's policy.
     LaunchedEffect(session) {
@@ -943,6 +969,38 @@ private fun SettingsDialog(prefs: UiPrefs, onDismiss: () -> Unit) {
                 SettingSwitch("Fullscreen covers the notch", ui.coverCutout) { on ->
                     prefs.update { it.copy(coverCutout = on) }
                 }
+                Text("Connections", style = MaterialTheme.typography.labelLarge)
+                SettingSwitch("Require post-quantum key exchange", ui.requirePostQuantum) { on ->
+                    prefs.update { it.copy(requirePostQuantum = on) }
+                }
+                Text(
+                    "Hosts can still allow classical key exchange in their own settings.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    "Reconnect attempts (hosts with reconnect on)",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (n in listOf(3, 6, 12)) {
+                        FilterChip(
+                            selected = ui.reconnectAttempts == n,
+                            onClick = { prefs.update { it.copy(reconnectAttempts = n) } },
+                            label = { Text("$n") },
+                        )
+                    }
+                }
+                Text("Bell", style = MaterialTheme.typography.labelLarge)
+                SettingSwitch("Vibrate", ui.bellVibrate) { on ->
+                    prefs.update { it.copy(bellVibrate = on) }
+                }
+                SettingSwitch("Flash the screen", ui.bellFlash) { on ->
+                    prefs.update { it.copy(bellFlash = on) }
+                }
+                Text("Keys", style = MaterialTheme.typography.labelLarge)
+                SettingSwitch("New keys usable only while unlocked", ui.keysWhileUnlocked) { on ->
+                    prefs.update { it.copy(keysWhileUnlocked = on) }
+                }
                 Text(
                     "Text size ${ui.fontSizeSp} sp (pinch the terminal to change)",
                     style = MaterialTheme.typography.bodySmall,
@@ -965,13 +1023,13 @@ private fun SettingSwitch(label: String, on: Boolean, onChange: (Boolean) -> Uni
  * delete. Private keys never leave Android Keystore.
  */
 @Composable
-private fun KeysDialog(keys: SshKeys, onDismiss: () -> Unit) {
+private fun KeysDialog(keys: SshKeys, unlockedDefault: Boolean, onDismiss: () -> Unit) {
     val all by keys.keys.collectAsState()
     val context = LocalContext.current
     var name by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var deleting by remember { mutableStateOf<SshKeys.Key?>(null) }
-    var whileUnlocked by remember { mutableStateOf(true) }
+    var whileUnlocked by remember { mutableStateOf(unlockedDefault) }
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },

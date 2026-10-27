@@ -479,13 +479,13 @@ class TerminalView(context: Context) : View(context) {
     private var flashUntil = 0L
     private var lastBell = 0L
 
-    /** A visual flash and a short vibration; repeated bells within a second are ignored. */
-    fun bell() {
+    /** A visual flash and/or a short vibration; repeated bells within a second are ignored. */
+    fun bell(flash: Boolean = true, vibrate: Boolean = true) {
         val now = android.os.SystemClock.uptimeMillis()
         if (now - lastBell < 1000) return
         lastBell = now
-        flashUntil = now + BELL_FLASH_MS
-        performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
+        if (flash) flashUntil = now + BELL_FLASH_MS
+        if (vibrate) performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
         invalidate()
     }
 

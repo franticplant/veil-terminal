@@ -58,6 +58,7 @@ class Profiles(context: Context) {
                     .put("key", t.keyId)
                     .put("startup", t.startup)
                     .put("reconnect", t.autoReconnect)
+                    .put("classicalKex", t.allowClassicalKex)
             )
         }
         prefs.edit().putString("list", arr.toString()).apply()
@@ -76,6 +77,7 @@ class Profiles(context: Context) {
                 keyId = o.optString("key"),
                 startup = o.optString("startup"),
                 autoReconnect = o.optBoolean("reconnect"),
+                allowClassicalKex = o.optBoolean("classicalKex"),
             )
         }
     }

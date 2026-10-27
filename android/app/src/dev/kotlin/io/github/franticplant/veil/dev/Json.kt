@@ -84,6 +84,17 @@ internal object Json {
                 .put("phase", phase(st.phase))
                 .put("detail", st.detail)
                 .put(
+                    "security",
+                    st.security?.let {
+                        JSONObject()
+                            .put("kex", it.kex)
+                            .put("postQuantum", it.postQuantum)
+                            .put("cipher", it.cipher)
+                            .put("mac", it.mac)
+                            .put("hostKeyAlgorithm", it.hostKeyAlgorithm)
+                    } ?: JSONObject.NULL,
+                )
+                .put(
                     "prompt",
                     s.prompt.value?.let { if (detailed) prompt(it) else promptKind(it) }
                         ?: JSONObject.NULL,

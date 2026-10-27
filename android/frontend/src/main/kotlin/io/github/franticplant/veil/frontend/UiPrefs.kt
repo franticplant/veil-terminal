@@ -25,6 +25,13 @@ class UiPrefs(context: Context) {
         val theme: String = Palette.VEIL.id,
         /** In fullscreen, draw into the display cutout (notch) area too. */
         val coverCutout: Boolean = false,
+        /** Refuse servers without post-quantum key exchange (hosts may allow classical). */
+        val requirePostQuantum: Boolean = true,
+        val reconnectAttempts: Int = 6,
+        val bellVibrate: Boolean = true,
+        val bellFlash: Boolean = true,
+        /** The default for new keys: usable only while the phone is unlocked. */
+        val keysWhileUnlocked: Boolean = true,
     )
 
     private val _values =
@@ -38,6 +45,11 @@ class UiPrefs(context: Context) {
                         .getOrDefault(ClipboardPolicy.ASK),
                 theme = prefs.getString("theme", Palette.VEIL.id)!!,
                 coverCutout = prefs.getBoolean("coverCutout", false),
+                requirePostQuantum = prefs.getBoolean("requirePQ", true),
+                reconnectAttempts = prefs.getInt("reconnectAttempts", 6),
+                bellVibrate = prefs.getBoolean("bellVibrate", true),
+                bellFlash = prefs.getBoolean("bellFlash", true),
+                keysWhileUnlocked = prefs.getBoolean("keysWhileUnlocked", true),
             )
         )
 
@@ -52,6 +64,11 @@ class UiPrefs(context: Context) {
             putString("clipboard", v.clipboard.name)
             putString("theme", v.theme)
             putBoolean("coverCutout", v.coverCutout)
+            putBoolean("requirePQ", v.requirePostQuantum)
+            putInt("reconnectAttempts", v.reconnectAttempts)
+            putBoolean("bellVibrate", v.bellVibrate)
+            putBoolean("bellFlash", v.bellFlash)
+            putBoolean("keysWhileUnlocked", v.keysWhileUnlocked)
         }
         _values.value = v
     }

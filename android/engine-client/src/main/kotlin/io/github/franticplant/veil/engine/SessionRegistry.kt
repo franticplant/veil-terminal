@@ -49,6 +49,8 @@ data class Target(
     val startup: String = "",
     /** Reconnect when the connection drops (not when closed by the user or the shell exits). */
     val autoReconnect: Boolean = false,
+    /** Accept a classical key exchange from servers without a post-quantum one. */
+    val allowClassicalKex: Boolean = false,
 ) {
     val displayName: String
         get() = label.ifEmpty { if (port == 22) "$username@$host" else "$username@$host:$port" }
@@ -68,6 +70,8 @@ class SessionRegistry(
     internal val log: LogRing = LogRing(),
     /** Signs logins for sessions with a key; null: keys are not offered. */
     private val signer: LoginSigner? = null,
+    /** The user's defaults, read at each use (they can change in settings). */
+    private val policy: () -> SessionPolicy = { SessionPolicy() },
 ) {
     private val connectLock = Mutex()
     @Volatile private var conn: EngineConnection? = null
@@ -179,7 +183,8 @@ class SessionRegistry(
             val st = s.status.first { it.closed }
             if (!st.dropped) return@launch
             val (cols, rows) = synchronized(s.screen) { s.screen.cols to s.screen.rows }
-            for ((attempt, pause) in RECONNECT_PAUSES_MS.withIndex()) {
+            val pauses = RECONNECT_PAUSES_MS.take(policy().reconnectAttempts.coerceIn(1, 12))
+            for ((attempt, pause) in pauses.withIndex()) {
                 log.info(
                     "session",
                     "connection dropped; reconnecting in ${pause / 1000} s (attempt ${attempt + 1})",
@@ -221,6 +226,9 @@ class SessionRegistry(
                             .setUsername(target.username)
                             .setSize(TermSize.newBuilder().setCols(cols).setRows(rows))
                             .addAllPublicKeys(publicKeysFor(target))
+                            .setAllowClassicalKex(
+                                target.allowClassicalKex || !policy().requirePostQuantum
+                            )
                     )
             )
         val id = reply.expect(EngineMsg.BodyCase.SESSION_OPENED).sessionOpened.sessionId
@@ -287,6 +295,7 @@ class SessionRegistry(
                 byId[msg.sessionState.sessionId]?.onState(
                     msg.sessionState.phase,
                     msg.sessionState.detail,
+                    if (msg.sessionState.hasSecurity()) msg.sessionState.security else null,
                 )
             EngineMsg.BodyCase.HOST_KEY_PROMPT ->
                 byId[msg.hostKeyPrompt.sessionId]?.onPrompt(Prompt.HostKey(msg.hostKeyPrompt))
@@ -315,8 +324,30 @@ class SessionRegistry(
  */
 data class ClipboardOffer(val text: String, val primary: Boolean)
 
-/** Pauses before successive reconnect attempts. */
-private val RECONNECT_PAUSES_MS = listOf(2_000L, 5_000L, 15_000L, 30_000L, 30_000L, 60_000L)
+/** Pauses before successive reconnect attempts (the first [SessionPolicy.reconnectAttempts]). */
+private val RECONNECT_PAUSES_MS =
+    listOf(
+        2_000L,
+        5_000L,
+        15_000L,
+        30_000L,
+        30_000L,
+        60_000L,
+        60_000L,
+        120_000L,
+        120_000L,
+        300_000L,
+        300_000L,
+        300_000L,
+    )
+
+/** Session behavior the user can change in settings; hosts can override some of it. */
+data class SessionPolicy(
+    /** Refuse servers without post-quantum key exchange, unless the host allows classical. */
+    val requirePostQuantum: Boolean = true,
+    /** Reconnect attempts after a drop, for hosts with reconnect on. */
+    val reconnectAttempts: Int = 6,
+)
 
 /** Something the engine needs a human to decide. */
 sealed interface Prompt {
@@ -326,7 +357,12 @@ sealed interface Prompt {
 }
 
 /** Where a session is in its life; [detail] explains a CLOSED one. */
-data class SessionStatus(val phase: SessionPhase, val detail: String = "") {
+data class SessionStatus(
+    val phase: SessionPhase,
+    val detail: String = "",
+    /** What the connection negotiated; set once it is open. */
+    val security: io.github.franticplant.veil.engine.proto.ConnectionSecurity? = null,
+) {
     val closed: Boolean
         get() = phase == SessionPhase.SESSION_PHASE_CLOSED
 
@@ -495,10 +531,21 @@ internal constructor(
         }
     }
 
-    internal fun onState(phase: SessionPhase, detail: String) {
+    internal fun onState(
+        phase: SessionPhase,
+        detail: String,
+        security: io.github.franticplant.veil.engine.proto.ConnectionSecurity? = null,
+    ) {
         val name = phase.name.removePrefix("SESSION_PHASE_")
         registry.log.info("session", if (detail.isEmpty()) name else "$name: $detail", id)
-        _status.value = SessionStatus(phase, detail)
+        if (security != null) {
+            registry.log.info(
+                "session",
+                "key exchange ${security.kex} (${if (security.postQuantum) "post-quantum" else "classical"})",
+                id,
+            )
+        }
+        _status.value = SessionStatus(phase, detail, security ?: _status.value.security)
         // Requests already queued still go out; nothing new is accepted.
         if (phase == SessionPhase.SESSION_PHASE_CLOSED) outbox.close()
         if (phase == SessionPhase.SESSION_PHASE_CLOSED) _prompt.value = null

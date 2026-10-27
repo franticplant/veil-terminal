@@ -47,7 +47,14 @@ class VeilApplication : Application(), EngineHost {
     override val sshKeys: SshKeys by lazy { SshKeys(log) }
 
     override val sessions: SessionRegistry by lazy {
-        SessionRegistry(backend, appScope, log, sshKeys)
+        SessionRegistry(backend, appScope, log, sshKeys) {
+            uiPrefs.values.value.let {
+                io.github.franticplant.veil.engine.SessionPolicy(
+                    it.requirePostQuantum,
+                    it.reconnectAttempts,
+                )
+            }
+        }
     }
 
     override val profiles: Profiles by lazy { Profiles(this) }

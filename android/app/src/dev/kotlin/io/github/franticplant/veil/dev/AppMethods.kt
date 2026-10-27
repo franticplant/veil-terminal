@@ -460,6 +460,7 @@ class AppMethods(private val app: VeilApplication) {
                 ),
                 str("startup", "Typed once the shell is open (e.g. tmux new -A -s main)."),
                 bool("reconnect", "Reconnect by itself when the connection drops."),
+                bool("allowClassicalKex", "Accept servers without post-quantum key exchange."),
             )
         ) { p ->
             val target =
@@ -482,6 +483,11 @@ class AppMethods(private val app: VeilApplication) {
                     .let {
                         if (p.has("reconnect"))
                             it.copy(autoReconnect = p.boolOr("reconnect", false))
+                        else it
+                    }
+                    .let {
+                        if (p.has("allowClassicalKex"))
+                            it.copy(allowClassicalKex = p.boolOr("allowClassicalKex", false))
                         else it
                     }
             val s = engine { registry.open(target, p.intOr("cols", 80), p.intOr("rows", 24)) }
