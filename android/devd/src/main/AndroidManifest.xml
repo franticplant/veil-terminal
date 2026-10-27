@@ -38,6 +38,7 @@
 
         <activity
             android:name=".MainActivity"
+            android:process=":ui"
             android:exported="true"
             android:launchMode="singleTop">
             <intent-filter>
@@ -54,6 +55,11 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Development control listener for a paired workstation; off by default and switched off by a timer" />
         </service>
+
+        <!-- The screen (:ui process) reaches the service through this; not exported. -->
+        <service
+            android:name=".UiService"
+            android:exported="false" />
 
         <receiver
             android:name=".InstallReceiver"

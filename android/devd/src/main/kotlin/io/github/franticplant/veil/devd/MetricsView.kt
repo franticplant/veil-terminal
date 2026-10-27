@@ -16,10 +16,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -29,9 +32,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 private val RAM = Color(0xFF61AFEF)
@@ -50,9 +51,17 @@ fun humanBytes(b: Double): String =
 
 /** Every series [keys] over the same window, scaled to the largest value, in [colors]. */
 @Composable
-private fun Chart(app: DevdApp, keys: List<String>, colors: List<Color>, height: Int = 56) {
-    val version by app.metrics.version.collectAsState()
-    val data = remember(version, keys) { keys.map { app.metrics.points(it) } }
+private fun Chart(app: RemoteDevd, keys: List<String>, colors: List<Color>, height: Int = 56) {
+    val version by app.metricsVersion.collectAsState()
+    var data by remember(keys) { mutableStateOf<List<List<Pair<Long, Double>>>>(emptyList()) }
+    LaunchedEffect(version, keys) {
+        data =
+            try {
+                keys.map { app.points(it) }
+            } catch (e: Exception) {
+                emptyList()
+            }
+    }
     val maxV = data.flatten().maxOfOrNull { it.second }?.takeIf { it > 0 } ?: 1.0
     val t1 = data.flatten().maxOfOrNull { it.first } ?: 0L
     val t0 = t1 - Metrics.KEEP * Metrics.INTERVAL_MS
@@ -86,8 +95,27 @@ private fun Legend(vararg items: Pair<String, Color>) {
  * devd's Metrics tab: every process it can see, the network, and each connection, over 30 minutes.
  */
 @Composable
-fun MetricsView(app: DevdApp) {
-    val latest by app.metrics.latest.collectAsState()
+fun MetricsView(app: RemoteDevd) {
+    val version by app.metricsVersion.collectAsState()
+    var latest by remember { mutableStateOf<JSONObject?>(null) }
+    LaunchedEffect(version) {
+        latest =
+            try {
+                app.call("metrics.latest") as? JSONObject
+            } catch (e: Exception) {
+                null
+            }
+    }
+    var netNow by remember { mutableStateOf(0.0 to 0.0) }
+    LaunchedEffect(version) {
+        netNow =
+            try {
+                (app.points("net.inBps").lastOrNull()?.second ?: 0.0) to
+                    (app.points("net.outBps").lastOrNull()?.second ?: 0.0)
+            } catch (e: Exception) {
+                0.0 to 0.0
+            }
+    }
     val offAt by app.offAtMs.collectAsState()
     val scope = rememberCoroutineScope()
     Column(
@@ -102,11 +130,9 @@ fun MetricsView(app: DevdApp) {
             OutlinedButton(
                 onClick = {
                     scope.launch {
-                        withContext(Dispatchers.IO) {
-                            try {
-                                app.hooks.get()
-                            } catch (e: Exception) {}
-                        }
+                        try {
+                            app.call("hooks.connect")
+                        } catch (e: Exception) {}
                     }
                 }
             ) {
@@ -123,8 +149,7 @@ fun MetricsView(app: DevdApp) {
         Card {
             Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Network (Veil)", fontWeight = FontWeight.Bold)
-                val inNow = app.metrics.points("net.inBps").lastOrNull()?.second ?: 0.0
-                val outNow = app.metrics.points("net.outBps").lastOrNull()?.second ?: 0.0
+                val (inNow, outNow) = netNow
                 Legend(
                     "in ${humanBytes(inNow)}/s" to NET_IN,
                     "out ${humanBytes(outNow)}/s" to NET_OUT,
@@ -181,7 +206,7 @@ fun MetricsView(app: DevdApp) {
 }
 
 @Composable
-private fun ProcessCard(app: DevdApp, p: JSONObject) {
+private fun ProcessCard(app: RemoteDevd, p: JSONObject) {
     val name = p.getString("name")
     Card {
         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {

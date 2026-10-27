@@ -27,6 +27,8 @@ class DevdApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // The :ui process only runs the screen; the service's parts stay in the main process.
+        if (getProcessName().endsWith(":ui")) return
         log.info("devd", "started ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
     }
 }

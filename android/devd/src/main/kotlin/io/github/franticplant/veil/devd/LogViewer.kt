@@ -188,7 +188,7 @@ private fun highlight(e: JSONObject, source: LogSource, search: String): Annotat
 
 /** Reads entries after [cursor] from [source]; returns them and the next cursor. */
 private suspend fun fetch(
-    app: DevdApp,
+    d: RemoteDevd,
     source: LogSource,
     cursor: Long,
     first: Boolean,
@@ -201,10 +201,18 @@ private suspend fun fetch(
                 val kind = if (source == LogSource.DEVD) "log" else "access"
                 if (first) {
                     // Open at the end: the newest entries, then follow from the head.
-                    val tail = list(app.journal.tail(KEEP, JournalFilter.of(kind)))
-                    tail to app.journal.head().getLong("seq")
+                    val tail =
+                        list(
+                            d.call("journal.tail", JSONObject().put("max", KEEP).put("kind", kind))
+                                as JSONArray
+                        )
+                    tail to (d.call("journal.head") as JSONObject).getLong("seq")
                 } else {
-                    val r = app.journal.read(cursor, 1000, JournalFilter.of(kind))
+                    val r =
+                        d.call(
+                            "journal.read",
+                            JSONObject().put("after", cursor).put("max", 1000).put("kind", kind),
+                        ) as JSONObject
                     list(r.getJSONArray("entries")) to r.getLong("nextSeq")
                 }
             }
@@ -212,7 +220,12 @@ private suspend fun fetch(
             LogSource.ENGINE -> {
                 val method = if (source == LogSource.APP) "app.logs" else "engine.logs"
                 val reply =
-                    app.hooks.call(method, JSONObject().put("after", cursor).put("max", 1000))
+                    d.call(
+                        "veil.call",
+                        JSONObject()
+                            .put("method", method)
+                            .put("params", JSONObject().put("after", cursor).put("max", 1000)),
+                    ) as JSONObject
                 reply.optJSONObject("error")?.let {
                     throw ApiException(it.getString("code"), it.getString("message"))
                 }
@@ -223,7 +236,7 @@ private suspend fun fetch(
     }
 
 @Composable
-fun LogViewer(app: DevdApp) {
+fun LogViewer(app: RemoteDevd) {
     var source by remember { mutableStateOf(LogSource.DEVD) }
     val entries = remember { mutableStateListOf<JSONObject>() }
     var search by remember { mutableStateOf("") }
@@ -239,7 +252,7 @@ fun LogViewer(app: DevdApp) {
 
     fun verify() {
         chain = null
-        scope.launch { chain = withContext(Dispatchers.IO) { app.journal.verify() } }
+        scope.launch { chain = app.call("journal.verify") as? JSONObject }
     }
 
     // Load and poll the chosen source.

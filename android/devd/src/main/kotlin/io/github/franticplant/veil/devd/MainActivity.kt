@@ -36,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,11 +46,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
-import io.github.franticplant.veil.dev.api.DevIds
 import io.github.franticplant.veil.dev.api.Scope
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * devd's screen. Everything that grants or widens access happens here and only here: switching the
@@ -64,8 +65,10 @@ class MainActivity : ComponentActivity() {
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
-        val app = application as DevdApp
+        val app = RemoteDevd(this)
+        remote = app
         setContent {
+            LaunchedEffect(Unit) { app.poll() }
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface(Modifier.fillMaxSize()) {
                     var tab by remember { mutableIntStateOf(0) }
@@ -94,14 +97,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var remote: RemoteDevd? = null
+
+    override fun onDestroy() {
+        remote?.close()
+        super.onDestroy()
+    }
+
     @Composable
-    private fun Screen(app: DevdApp) {
+    private fun Screen(app: RemoteDevd) {
+        val scope = rememberCoroutineScope()
         val offAt by app.offAtMs.collectAsState()
-        val addresses by app.server.addresses.collectAsState()
-        val settings by app.settings.values.collectAsState()
-        val pending by app.pairings.pending.collectAsState()
-        val pairings by app.pairings.all.collectAsState()
-        val binds by app.server.binds.collectAsState()
+        val addresses by app.addresses.collectAsState()
+        val settings by app.settings.collectAsState()
+        val pending by app.pending.collectAsState()
+        val pairings by app.pairings.collectAsState()
+        val binds by app.binds.collectAsState()
+        val fingerprint by app.fingerprint.collectAsState()
+        val veil by app.veil.collectAsState()
+        fun update(v: Settings.Values) = scope.launch { runCatching { app.updateSettings(v) } }
         var tick by remember { mutableIntStateOf(0) }
         LaunchedEffect(Unit) {
             while (true) {
@@ -177,7 +191,7 @@ class MainActivity : ComponentActivity() {
                         "127.0.0.1 (this phone; tailnet forwards arrive here)",
                         settings.loopback,
                     ) { on ->
-                        app.settings.update(settings.copy(loopback = on))
+                        update(settings.copy(loopback = on))
                     }
                     val names = (ifaces.map { it.first } + settings.ifaces).distinct().sorted()
                     for (name in names) {
@@ -187,7 +201,7 @@ class MainActivity : ComponentActivity() {
                                 ?.second
                                 ?.joinToString { it.hostAddress ?: "" }
                         IfaceRow(name, addrs ?: "not up now", name in settings.ifaces) { on ->
-                            app.settings.update(
+                            update(
                                 settings.copy(
                                     ifaces =
                                         if (on) settings.ifaces + name else settings.ifaces - name
@@ -201,14 +215,14 @@ class MainActivity : ComponentActivity() {
                             FilterChip(
                                 selected = settings.autoOffMinutes == m,
                                 onClick = {
-                                    app.settings.update(settings.copy(autoOffMinutes = m))
+                                    update(settings.copy(autoOffMinutes = m))
                                 },
                                 label = { Text(if (m < 60) "${m}m" else "${m / 60}h") },
                             )
                         }
                     }
                     Text(
-                        "Server key: ${Tls.groups(app.server.fingerprint)}",
+                        "Server key: ${Tls.groups(fingerprint)}",
                         fontFamily = FontFamily.Monospace,
                         fontSize = 12.sp,
                     )
@@ -218,11 +232,7 @@ class MainActivity : ComponentActivity() {
             Card {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Installs", fontWeight = FontWeight.Bold)
-                    val veil = remember(tick) { app.updater.installed(DevIds.VEIL_PACKAGE) }
-                    Text(
-                        veil?.let { "Veil ${it.versionName} (${it.longVersionCode})" }
-                            ?: "Veil is not installed"
-                    )
+                    Text(veil ?: "Veil is not installed")
                     if (!packageManager.canRequestPackageInstalls()) {
                         Text("devd may not install apps yet.")
                         OutlinedButton(
@@ -260,7 +270,11 @@ class MainActivity : ComponentActivity() {
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
-                            TextButton(onClick = { app.pairings.revoke(p) }) { Text("Revoke") }
+                            TextButton(
+                                onClick = { scope.launch { runCatching { app.revoke(p) } } }
+                            ) {
+                                Text("Revoke")
+                            }
                         }
                     }
                 }
@@ -274,7 +288,8 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun PairingCard(app: DevdApp, req: PairingRequest) {
+    private fun PairingCard(app: RemoteDevd, req: PendingView) {
+        val scope = rememberCoroutineScope()
         var scopes by remember(req) { mutableStateOf(req.requestedScopes) }
         var days by remember(req) { mutableIntStateOf(7) }
         Card {
@@ -316,12 +331,14 @@ class MainActivity : ComponentActivity() {
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        onClick = { app.pairings.approve(req, scopes, days) },
+                        onClick = {
+                            scope.launch { runCatching { app.approve(req, scopes, days) } }
+                        },
                         enabled = scopes.isNotEmpty(),
                     ) {
                         Text("Approve")
                     }
-                    OutlinedButton(onClick = { app.pairings.deny(req, "denied on the phone") }) {
+                    OutlinedButton(onClick = { scope.launch { runCatching { app.deny(req) } } }) {
                         Text("Deny")
                     }
                 }
