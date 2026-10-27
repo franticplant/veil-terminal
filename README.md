@@ -3,7 +3,8 @@
 An Android SSH workstation that treats remote-facing protocol processing as hostile. The long-term
 design runs SSH, terminal parsing and other remote-facing code in separate compartments inside a
 pKVM-protected Microdroid VM, with networking, VM control, credentials and the UI split across
-separate Android identities. See [docs/design/0000-bootstrap-proposal.md](docs/design/0000-bootstrap-proposal.md).
+separate Android identities. See [docs/design/0000-bootstrap-proposal.md](docs/design/0000-bootstrap-proposal.md) and,
+for where each component lives now and how it moves, [docs/design/0001-component-layout.md](docs/design/0001-component-layout.md).
 
 What works today:
 - SSH sessions, with password, keyboard-interactive or key login. Keys are
@@ -30,6 +31,11 @@ through the engine protocol, in one process.
 | `proto/` | The engine protocol schema, shared by Rust and Kotlin |
 | `core/protocol` | Rust protocol types, limits, checked decoding |
 | `core/engine` | The engine (no Android dependencies) |
+| `core/term` | The terminal emulator boundary: remote bytes in, plain frames out |
+| `core/caps` | Capabilities the engine is handed: `Dialer`, `HostKeyStore` |
+| `core/obs` | Log ring and counters |
+| `core/wire` | Framing for the protocol on streams (process / VM boundary) |
+| `guest/engine-host` | The engine as its own process on a stream (the Microdroid payload's core) |
 | `android/jni` | The JNI byte pipe into the engine (`libveil_jni.so`) |
 | `android/engine-client` | Kotlin: `EngineBackend`, `EngineConnection`, the native pipe |
 | `android/frontend` | The disposable v0.x UI; depends only on `engine-client` |
