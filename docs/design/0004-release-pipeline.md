@@ -36,12 +36,49 @@ The rules follow Tailmesh's.
    (licenses and advisories).
 2. APKs built unsigned. Then Kotlin format, unit tests and lint.
 3. The release check. The prod APK must carry no dev pieces: no DevHooks, no
-   dev classes, no install permissions, not debuggable, and the native engine
-   and its host present. The check runs inverted on the dev APK, so a broken
-   check cannot pass silently.
+   dev classes, no install permissions, not debuggable. The native engine,
+   its host and the third-party notices must be present. The check runs
+   inverted on the dev APK, so a broken check cannot pass silently.
 4. On pushes to `main`: dev Veil and devd are signed in the `release`
    environment. They are kept as workflow artifacts for 30 days, for
    development; they are never release assets.
+
+A newer push to the same branch or pull request cancels the older run. When
+a run fails, the test and lint reports are uploaded.
+
+**Caching.** The build container image is cached by the hash of its
+Containerfile. The rest of the cache is one directory, keyed on
+`Cargo.lock`, every `Cargo.toml`, the Gradle files and the Containerfile. It
+holds:
+
+- the cargo registry;
+- the compiled Rust dependencies;
+- Gradle's dependency, build and configuration caches.
+
+Every run restores the newest such cache, pull requests included. `main`
+saves a new one only when the key changes, so a push does not upload
+gigabytes, and the image cache is not evicted (the repository limit is
+10 GB). Releases do not use this cache.
+
+## Third-party notices
+
+Every APK carries `assets/third_party_notices.txt`. It is shown in the app
+under Settings → Open-source licenses, and attached to each release as a file
+of its own. The `<variant>ThirdPartyNotices` task in `android/app/build.gradle`
+generates it from two sources:
+
+- **Java and Kotlin libraries:** every module on the variant's runtime
+  classpath, mapped to its license by group. The license texts are in
+  `android/notices/`, verbatim, including protobuf's copyright line. A
+  dependency from a group that is not in the table fails the build, so a new
+  dependency cannot ship without its license.
+- **Rust crates in the native engine:** `cargo about`, configured by
+  `about.toml` and `about.hbs`. It runs offline, for the Android targets,
+  without build or dev dependencies and without our own crates. The licenses
+  it accepts match `deny.toml`.
+
+v0.0.1 shipped before the notices existed. v0.0.2 is the first release that
+carries them.
 
 ## Releases (`release.yml`)
 

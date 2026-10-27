@@ -55,6 +55,7 @@ RUN curl -fsSLo /tmp/rustup-init https://static.rust-lang.org/rustup/archive/1.2
  && rm /tmp/rustup-init
 ENV PATH=/opt/cargo/bin:${PATH}
 RUN cargo install --locked --root /opt/cargo cargo-ndk@4.1.2 cargo-deny@0.20.2 \
+ && cargo install --locked --root /opt/cargo --features cli cargo-about@0.9.3 \
  && rm -rf /opt/cargo/registry /opt/cargo/git
 
 # At run time the registry lives in a cache volume, not in the image.

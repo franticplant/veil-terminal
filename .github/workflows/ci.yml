@@ -3,8 +3,13 @@
 #
 # Everything runs in the same container as local builds (build/Containerfile,
 # through scripts/podman-run), so CI and a laptop build the same thing. The
-# image and the cargo/Gradle caches are kept with actions/cache, keyed on the
-# files that decide their contents.
+# image and the cargo/Gradle caches (registry, compiled dependencies, Gradle's
+# build and configuration caches) are kept with actions/cache, keyed on the
+# files that decide their contents. main saves a new cache only when that key
+# changes, so a push does not upload gigabytes or evict the image cache.
+#
+# Builds here are unsigned; signing happens only in the "release" environment
+# (dev-apk below, and release.yml), and only signed APKs are ever published.
 name: CI
 
 on:
@@ -15,17 +20,20 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch or pull request cancels the older run: only
+# the newest commit's result matters, and runners are not spent on the rest.
+# (Releases are a separate workflow and never cancelled.)
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-env:
-  VEIL_CACHE_DIR: ${{ github.workspace }}/../veil-cache
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      # Absolute: actions/cache rejects paths containing "..".
+      VEIL_CACHE_DIR: ${{ runner.temp }}/veil-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -34,10 +42,11 @@ jobs:
           fetch-depth: 1
       - uses: ./.github/actions/build-image
       - name: Restore build caches
+        id: cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.VEIL_CACHE_DIR }}
-          key: build-cache-${{ hashFiles('Cargo.lock', 'android/gradle/libs.versions.toml', 'android/gradle/wrapper/gradle-wrapper.properties', 'build/Containerfile') }}
+          key: build-cache-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'android/gradle/libs.versions.toml', 'android/**/*.gradle', 'android/gradle/wrapper/gradle-wrapper.properties', 'build/Containerfile') }}
           restore-keys: build-cache-
 
       - name: Rust format
@@ -49,7 +58,7 @@ jobs:
       - name: Dependency licenses and advisories
         run: scripts/podman-run cargo deny --locked check
 
-      - name: Build APKs (unsigned)
+      - name: Build APKs (unsigned; signed in dev-apk)
         run: scripts/build all
       - name: Kotlin format, unit tests, lint
         run: scripts/podman-run ./android/gradlew -p android --console=plain ktfmtCheck testDebugUnitTest :devd:testReleaseUnitTest lintProdRelease lintDevRelease :devd:lintRelease
@@ -58,12 +67,22 @@ jobs:
       - name: Release check, inverted (dev must still be recognised)
         run: scripts/podman-run --offline scripts/check-release-apk.sh --expect-dev android/app/build/outputs/apk/dev/release/app-dev-release-unsigned.apk
 
+      - name: Upload test and lint reports
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.sha }}
+          path: |
+            android/*/build/reports/
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Save build caches
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.VEIL_CACHE_DIR }}
-          key: build-cache-${{ hashFiles('Cargo.lock', 'android/gradle/libs.versions.toml', 'android/gradle/wrapper/gradle-wrapper.properties', 'build/Containerfile') }}-${{ github.run_id }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-apks

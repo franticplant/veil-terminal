@@ -80,8 +80,10 @@ import io.github.franticplant.veil.engine.proto.HostKeyDecision
 import io.github.franticplant.veil.engine.proto.HostKeyPrompt
 import io.github.franticplant.veil.engine.proto.SessionPhase
 import io.github.franticplant.veil.frontend.KeyEncoder.Key
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The v0.x frontend: saved hosts, session tabs, the terminal, and the dialogs the engine asks for.
@@ -917,6 +919,8 @@ val LocalPalette = staticCompositionLocalOf { Palette.VEIL }
 @Composable
 private fun SettingsDialog(prefs: UiPrefs, onDismiss: () -> Unit) {
     val ui by prefs.values.collectAsState()
+    var showLicenses by remember { mutableStateOf(false) }
+    if (showLicenses) LicensesDialog { showLicenses = false }
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
@@ -1020,6 +1024,50 @@ private fun SettingsDialog(prefs: UiPrefs, onDismiss: () -> Unit) {
                     "Text size ${ui.fontSizeSp} sp (pinch the terminal to change)",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                TextButton(onClick = { showLicenses = true }) { Text("Open-source licenses") }
+            }
+        },
+    )
+}
+
+/**
+ * The third-party notices the build puts in the APK (assets/third_party_notices.txt): every Java,
+ * Kotlin and Rust component Veil ships, with its license text. Read off the main thread and shown
+ * line by line, since it is a few hundred kilobytes.
+ */
+@Composable
+private fun LicensesDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var lines by remember { mutableStateOf<List<String>?>(null) }
+    LaunchedEffect(Unit) {
+        lines =
+            withContext(Dispatchers.IO) {
+                try {
+                    context.assets.open("third_party_notices.txt").bufferedReader().readLines()
+                } catch (e: java.io.IOException) {
+                    listOf("This build has no third-party notices.")
+                }
+            }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        title = { Text("Open-source licenses") },
+        text = {
+            val l = lines
+            if (l == null) {
+                Text("Loading…")
+            } else {
+                LazyColumn {
+                    items(l) {
+                        Text(
+                            it,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            softWrap = true,
+                        )
+                    }
+                }
             }
         },
     )

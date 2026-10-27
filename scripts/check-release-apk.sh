@@ -16,8 +16,9 @@
 #                just unreachable), and the DevHooks service and its DEV_HOOKS
 #                permission in the manifest
 #   prod only    none of the dev-only permissions below
-#   always       not debuggable; libveil_jni.so packaged for arm64-v8a; if the
-#                APK is signed, the signer is the pinned Veil certificate
+#   always       not debuggable; libveil_jni.so and the engine host packaged
+#                for arm64-v8a; third-party notices present; if the APK is
+#                signed, the signer is the pinned Veil certificate
 #
 # Runs in the build container (scripts/podman-run --offline ...), which has
 # aapt2, dexdump and apksigner on PATH.
@@ -100,6 +101,11 @@ for apk in "$@"; do
 		ok "libveil_jni.so for arm64-v8a"
 	else
 		bad "libveil_jni.so for arm64-v8a is missing"
+	fi
+	if grep -q 'assets/third_party_notices.txt' <<< "$listing"; then
+		ok "third-party notices"
+	else
+		bad "third-party notices (assets/third_party_notices.txt) are missing"
 	fi
 	if grep -q 'lib/arm64-v8a/libveil_engine_host.so' <<< "$listing"; then
 		ok "engine host for arm64-v8a"

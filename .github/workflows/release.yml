@@ -46,9 +46,6 @@ concurrency:
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
-  # Plain directories instead of podman volumes. A release starts from empty
-  # caches: nothing from earlier runs goes into what we ship.
-  VEIL_CACHE_DIR: ${{ github.workspace }}/../veil-cache
 
 jobs:
   build:
@@ -62,6 +59,10 @@ jobs:
       attestations: write
     outputs:
       sha: ${{ steps.head.outputs.sha }}
+    env:
+      # Plain directories instead of podman volumes. A release starts from
+      # empty caches: nothing from earlier runs goes into what we ship.
+      VEIL_CACHE_DIR: ${{ runner.temp }}/veil-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,7 +92,7 @@ jobs:
       - name: Dependency licenses and advisories
         run: scripts/podman-run cargo deny --locked check
 
-      - name: Build prod APK (unsigned)
+      - name: Build prod APK (unsigned; signed below)
         env:
           VEIL_RELEASE_TAG: ${{ env.TAG }}
         run: scripts/build prod
@@ -116,6 +117,13 @@ jobs:
       - name: Remove keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/veil-release.p12"
+
+      # The notices inside the APK, also as a file of their own.
+      - name: Third-party notices
+        run: |
+          apk=$(ls dist/veil-*.apk)
+          unzip -p "$apk" assets/third_party_notices.txt > "dist/veil-$TAG-third-party-notices.txt"
+          test -s "dist/veil-$TAG-third-party-notices.txt"
 
       - name: Checksums
         run: |
