@@ -1,0 +1,36 @@
+# Every tool the build uses, pinned. One list for both places a build runs:
+#   - CI: .github/actions/setup-build installs exactly these on the runner.
+#   - Locally: build/Containerfile installs exactly these in the build container.
+# Downloads are checked against SHA-256; SDK packages by version (sdkmanager
+# checks them against Google's index); the Rust toolchain is rust-toolchain.toml
+# (rustup checks its components); apt packages by version on the CI runner.
+# Plain KEY=value lines: sourced by shell scripts, read by workflows.
+
+# Java
+JDK_MAJOR=21
+
+# Android SDK
+ANDROID_PLATFORM='platforms;android-37.0'
+ANDROID_BUILD_TOOLS=36.0.0
+ANDROID_NDK=30.0.16248370
+# Command-line tools for the container (the CI runner image has its own sdkmanager).
+CMDLINE_TOOLS_ZIP=commandlinetools-linux-16111833_latest.zip
+CMDLINE_TOOLS_SHA256=0877a1d048fe4a24efe2eff536ca4223f7adeb58648bb81909d33c446918cfa8
+
+# Rust: the toolchain is in rust-toolchain.toml; rustup-init for the container.
+RUSTUP_INIT_VERSION=1.29.2
+RUSTUP_INIT_SHA256=5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4
+
+# Cargo tools: release binaries (static, musl), checked by SHA-256.
+CARGO_NDK_URL=https://github.com/bbqsrc/cargo-ndk/releases/download/v4.1.2/cargo-ndk-x86_64-unknown-linux-musl-v4.1.2.tgz
+CARGO_NDK_SHA256=dc148bebbfcd7d5355e9858530d5a69c20ce69cf3268c54b9f63c60cb4c9a966
+CARGO_DENY_URL=https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
+CARGO_DENY_SHA256=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+CARGO_ABOUT_URL=https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.3/cargo-about-0.9.3-x86_64-unknown-linux-musl.tar.gz
+CARGO_ABOUT_SHA256=3ad1e94ea1e63d69d1961f4fb15ccbbe9575d906111f96d2cb4dce6df48f71b4
+
+# musl C toolchain for the static veil-ctl, on the CI runner (Ubuntu 24.04).
+MUSL_TOOLS_UBUNTU=1.2.4-2
+
+# Matches rust-toolchain.toml's channel (the setup action checks).
+RUST_TOOLCHAIN=1.99.1

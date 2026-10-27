@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Runs a build command with the pinned toolchain (build/toolchain.lock).
+#
+#   scripts/run cargo test --workspace
+#   scripts/run --offline scripts/check-release-apk.sh APK
+#
+# Locally it runs in the build container (scripts/podman-run). With
+# VEIL_HOST_TOOLCHAIN=1, which CI's setup action sets after installing the same
+# pinned tools on the runner, it runs the command directly. --offline only
+# takes effect in the container.
+set -euo pipefail
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+if [[ ${VEIL_HOST_TOOLCHAIN:-} == 1 ]]; then
+	[[ ${1:-} == --offline ]] && shift
+	cd "$repo"
+	exec "$@"
+fi
+exec "$repo/scripts/podman-run" "$@"

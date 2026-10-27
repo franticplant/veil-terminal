@@ -4,7 +4,7 @@
 #   scripts/sign dev|prod|devd
 #       Signs android/app/build/outputs/apk/<flavor>/release/...-unsigned.apk
 #       (devd: android/devd/build/outputs/apk/release/devd-release-unsigned.apk) in
-#       a network-less container. Needs VEIL_KEYSTORE (path to the PKCS12
+#       a network-less container (in CI, with VEIL_HOST_TOOLCHAIN=1, on the runner). Needs VEIL_KEYSTORE (path to the PKCS12
 #       keystore, alias "veil") and VEIL_KEYSTORE_PASSWORD in the environment;
 #       CI sets both from the "release" environment's secrets.
 #
@@ -57,7 +57,7 @@ finish() {
 	# devd is not Veil: the Veil release check does not apply to it.
 	[[ $flavor == devd ]] && return 0
 	[[ $flavor == dev ]] && check=(--expect-dev)
-	"$repo/scripts/podman-run" --offline scripts/check-release-apk.sh "${check[@]}" "dist/$(basename "$out")"
+	"$repo/scripts/run" --offline scripts/check-release-apk.sh "${check[@]}" "dist/$(basename "$out")"
 }
 
 if [[ ${1:-} == --finish ]]; then
@@ -78,21 +78,25 @@ unsigned=$repo/android/app/build/outputs/apk/$flavor/release/app-$flavor-release
 [[ -f $VEIL_KEYSTORE ]] || { echo "keystore not found: $VEIL_KEYSTORE" >&2; exit 1; }
 export VEIL_KEYSTORE_PASSWORD
 
-tag=$(sha256sum "$repo/build/Containerfile" | cut -c1-16)
-image=localhost/veil-build:$tag
-podman image exists "$image" || { echo "build image $image missing; run scripts/build first" >&2; exit 1; }
-
 mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}"
 work=$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/veil-sign.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 cp "$unsigned" "$work/in.apk"
 
-# label=disable: the keystore is bind-mounted read-only without relabeling it.
-podman run --rm --network=none --security-opt label=disable --userns=keep-id \
-	-v "$repo/scripts/lib":/src/scripts/lib:ro \
-	-v "$work":/work \
-	-v "$VEIL_KEYSTORE":/signing/veil-release.p12:ro \
-	-e VEIL_KEYSTORE_PASSWORD \
-	"$image" /src/scripts/lib/sign-apk.sh /work/in.apk /work/signed.apk
+if [[ ${VEIL_HOST_TOOLCHAIN:-} == 1 ]]; then
+	# CI: the runner has the pinned build tools, and this job is the only one
+	# that holds the key (the "release" environment).
+	VEIL_KEYSTORE_PATH=$VEIL_KEYSTORE "$repo/scripts/lib/sign-apk.sh" "$work/in.apk" "$work/signed.apk"
+else
+	image=$("$repo/scripts/lib/image-tag.sh" "$repo")
+	podman image exists "$image" || { echo "build image $image missing; run scripts/build first" >&2; exit 1; }
+	# label=disable: the keystore is bind-mounted read-only without relabeling it.
+	podman run --rm --network=none --security-opt label=disable --userns=keep-id \
+		-v "$repo/scripts/lib":/src/scripts/lib:ro \
+		-v "$work":/work \
+		-v "$VEIL_KEYSTORE":/signing/veil-release.p12:ro \
+		-e VEIL_KEYSTORE_PASSWORD \
+		"$image" /src/scripts/lib/sign-apk.sh /work/in.apk /work/signed.apk
+fi
 
 finish "$flavor" "$work" direct

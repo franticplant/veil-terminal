@@ -19,13 +19,25 @@ The rules follow Tailmesh's.
   - `main` takes signed commits only, with no force-pushes;
   - `v*` tags are immutable;
   - a published release cannot be rewritten after the fact.
-- **The build environment is pinned.** Builds run in `build/Containerfile`,
-  locally and in CI alike:
-  - the Debian base image by digest;
-  - command-line tools and `rustup-init` by SHA-256;
-  - SDK packages by version (sdkmanager checks them against Google's index);
-  - Rust by toolchain version;
-  - cargo tools by version, with `--locked`.
+- **The toolchain is one pinned list, `build/toolchain.lock`.** Both places a
+  build runs install exactly that list:
+  - **CI** installs it on the runner (`.github/actions/setup-build`). CI builds
+    no container image.
+  - **Locally**, `build/Containerfile` installs it in the build container,
+    whose base image is pinned by digest.
+
+  How each tool is pinned:
+  - the JDK by major version;
+  - SDK packages and the NDK by version (sdkmanager checks them against
+    Google's index);
+  - the Rust toolchain by `rust-toolchain.toml` (rustup checks every
+    component; the setup action fails if the lock file disagrees);
+  - cargo-ndk, cargo-deny and cargo-about as release binaries, checked by
+    SHA-256;
+  - musl-tools on the runner by apt version.
+
+  `scripts/run` runs a command with that toolchain: directly on the runner in
+  CI (`VEIL_HOST_TOOLCHAIN=1`), in the container locally.
 - **Actions are pinned by commit SHA.** Dependabot moves the pins, together
   with the Gradle, Cargo and container dependencies. Every update goes through
   CI, including `cargo deny`.
@@ -46,19 +58,16 @@ The rules follow Tailmesh's.
 A newer push to the same branch or pull request cancels the older run. When
 a run fails, the test and lint reports are uploaded.
 
-**Caching.** The build container image is cached by the hash of its
-Containerfile. The rest of the cache is one directory, keyed on
-`Cargo.lock`, every `Cargo.toml`, the Gradle files and the Containerfile. It
-holds:
+**Caching.** Four caches, each keyed on what decides its contents:
 
-- the cargo registry;
-- the compiled Rust dependencies;
-- Gradle's dependency, build and configuration caches.
+- **The Rust toolchain and cargo tools,** keyed on the lock file.
+- **The NDK,** keyed on its version.
+- **The cargo registry and target directory,** keyed on the lock file and
+  `Cargo.lock`, falling back to the newest entry for the same toolchain.
+- **Gradle's dependency, build and configuration caches,** through
+  `setup-gradle`. Only `main` writes them; pull requests read them.
 
-Every run restores the newest such cache, pull requests included. `main`
-saves a new one only when the key changes, so a push does not upload
-gigabytes, and the image cache is not evicted (the repository limit is
-10 GB). Releases do not use this cache.
+Releases use none of the build caches.
 
 ## Third-party notices
 
@@ -87,15 +96,17 @@ Pushing a tag `vX.Y.Z` does the following:
 1. **SBOM.** An SPDX SBOM is generated from the pristine checkout.
 2. **Tests and dependency checks.** Rust tests and `cargo deny` run again,
    at the tag.
-3. **Build.** `scripts/build prod` builds with `VEIL_RELEASE_TAG`. The
+3. **Build.** `scripts/build all` builds Veil (prod and dev) and devd with
+   `VEIL_RELEASE_TAG`, and `scripts/ctl` builds veil-ctl (static, musl). The
    versionName becomes the tag without its `v`. The build refuses a dirty
    tree, or a HEAD that is not the tag's commit. The release caches start
    empty: nothing from earlier runs goes into what ships.
-4. **Release check** on the unsigned APK.
-5. **Signing.** `scripts/sign prod` signs inside a container without
-   network. It refuses a certificate other than the pinned one, and runs the
+4. **Release check** on the unsigned prod APK, and inverted on the dev APK.
+5. **Signing.** `scripts/sign` signs each APK on the runner, in the only job
+   that holds the key. Locally it signs in a container without network. It refuses a certificate other than the pinned one, and runs the
    release check again on the signed APK.
-6. **Attestations.** `SHA256SUMS` is written, then a SLSA build-provenance
+6. **Notices and attestations.** Each APK's notices are extracted as a file
+   of their own, next to veil-ctl's. `SHA256SUMS` is written, then a SLSA build-provenance
    attestation and an SBOM attestation over every file (Sigstore, through
    `actions/attest`).
 7. **Publish,** in a separate job that has no signing secrets:
@@ -109,9 +120,18 @@ Pushing a tag `vX.Y.Z` does the following:
      releases, builds are tagged with a suffix. The notes come from
      `docs/release-notes/<tag>.md` when that file exists.
 
-Only the prod APK is published. Dev Veil carries DevHooks and devd is a
-remote-control agent, so neither should be one tap away on a release page.
-veil-ctl is useful only with devd.
+Every target is published:
+
+- Veil;
+- Veil dev;
+- devd;
+- veil-ctl;
+- the third-party notices of each.
+
+The release notes carry a table of the files, saying which one to install
+(`veil-X.Y.Z.apk`) and that dev Veil and devd are development tools. The dev
+APK includes DevHooks, and devd is a remote-control agent: both are useful
+only when you want them, and devd requires pairing on the phone.
 
 ### Checking a download
 
@@ -146,8 +166,10 @@ To get there:
     deterministic across two runs.
   - The version is already a function of the commit (commit time and tag), so
     no clock enters the build.
-- **Container.** Pin the Debian packages too (a snapshot.debian.org date).
-  Today only the base image is pinned by digest.
+- **Toolchain.** The runner image (Ubuntu) and the JDK distribution are
+  pinned only by major version, and the local container's Debian packages
+  only by its base image. A rebuild that has to match byte for byte should
+  pin these too (for example a snapshot.debian.org date).
 - **Native-library extraction.** Since the engine host became an
   executable, the APK packages libraries uncompressed-for-extraction
   (`useLegacyPackaging`). That is deterministic, but it must be part of the

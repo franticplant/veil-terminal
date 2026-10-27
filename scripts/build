@@ -44,4 +44,4 @@ if [[ -n ${VEIL_RELEASE_TAG:-} ]]; then
 fi
 echo "versionCode $VEIL_VERSION_CODE, versionName $VEIL_VERSION_NAME" >&2
 
-exec "$repo/scripts/podman-run" ./android/gradlew -p android --console=plain "${tasks[@]}" "$@"
+exec "$repo/scripts/run" ./android/gradlew -p android --console=plain "${tasks[@]}" "$@"

@@ -1,12 +1,11 @@
 # Every push and pull request: Rust checks, Android build and tests, the
 # release check on both flavors. Pushes to main also produce signed dev APKs.
 #
-# Everything runs in the same container as local builds (build/Containerfile,
-# through scripts/podman-run), so CI and a laptop build the same thing. The
-# image and the cargo/Gradle caches (registry, compiled dependencies, Gradle's
-# build and configuration caches) are kept with actions/cache, keyed on the
-# files that decide their contents. main saves a new cache only when that key
-# changes, so a push does not upload gigabytes or evict the image cache.
+# No build container in CI: .github/actions/setup-build installs the pinned
+# toolchain from build/toolchain.lock on the runner (the same list the local
+# container is built from), and scripts/run uses it directly. The toolchain,
+# the NDK, the cargo registry and target directory and Gradle's caches are
+# cached, keyed on the files that decide their contents.
 #
 # Builds here are unsigned; signing happens only in the "release" environment
 # (dev-apk below, and release.yml), and only signed APKs are ever published.
@@ -32,41 +31,30 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      # Absolute (actions/cache rejects paths containing ".."), and set from a
-      # step because job-level env cannot use the runner context.
-      - name: Cache directory
-        run: echo "VEIL_CACHE_DIR=$RUNNER_TEMP/veil-cache" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # versionCode comes from the commit time, versionName from the sha.
           fetch-depth: 1
-      - uses: ./.github/actions/build-image
-      - name: Restore build caches
-        id: cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ env.VEIL_CACHE_DIR }}
-          key: build-cache-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'android/gradle/libs.versions.toml', 'android/**/*.gradle', 'android/gradle/wrapper/gradle-wrapper.properties', 'build/Containerfile') }}
-          restore-keys: build-cache-
+      - uses: ./.github/actions/setup-build
 
       - name: Rust format
-        run: scripts/podman-run cargo fmt --all --check
+        run: scripts/run cargo fmt --all --check
       - name: Rust lints
-        run: scripts/podman-run cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: scripts/run cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Rust tests
-        run: scripts/podman-run cargo test --workspace --locked
+        run: scripts/run cargo test --workspace --locked
       - name: Dependency licenses and advisories
-        run: scripts/podman-run cargo deny --locked check
+        run: scripts/run cargo deny --locked check
 
       - name: Build APKs (unsigned; signed in dev-apk)
         run: scripts/build all
       - name: Kotlin format, unit tests, lint
-        run: scripts/podman-run ./android/gradlew -p android --console=plain ktfmtCheck testDebugUnitTest :devd:testReleaseUnitTest lintProdRelease lintDevRelease :devd:lintRelease
+        run: scripts/run ./android/gradlew -p android --console=plain ktfmtCheck testDebugUnitTest :devd:testReleaseUnitTest lintProdRelease lintDevRelease :devd:lintRelease
       - name: Release check (prod must carry no dev pieces)
-        run: scripts/podman-run --offline scripts/check-release-apk.sh android/app/build/outputs/apk/prod/release/app-prod-release-unsigned.apk
+        run: scripts/run --offline scripts/check-release-apk.sh android/app/build/outputs/apk/prod/release/app-prod-release-unsigned.apk
       - name: Release check, inverted (dev must still be recognised)
-        run: scripts/podman-run --offline scripts/check-release-apk.sh --expect-dev android/app/build/outputs/apk/dev/release/app-dev-release-unsigned.apk
+        run: scripts/run --offline scripts/check-release-apk.sh --expect-dev android/app/build/outputs/apk/dev/release/app-dev-release-unsigned.apk
 
       - name: Upload test and lint reports
         if: failure()
@@ -78,12 +66,6 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-      - name: Save build caches
-        if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ env.VEIL_CACHE_DIR }}
-          key: ${{ steps.cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-apks
@@ -107,7 +89,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/build-image
+      - uses: ./.github/actions/setup-build
+        with:
+          signing-only: "true"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unsigned-apks

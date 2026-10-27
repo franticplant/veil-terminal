@@ -49,16 +49,18 @@ through the engine protocol, in one process.
 
 ## Building
 
-Everything builds in throwaway podman containers; the host needs only podman and git.
+Locally, everything builds in throwaway podman containers; the host needs only podman and git.
+The toolchain is pinned in `build/toolchain.lock`: the container is built from it, and CI installs
+the same list on its runners. `scripts/run` runs a command with that toolchain.
 
 ```sh
 scripts/build dev          # unsigned dev APK (first run builds the container image)
 scripts/build devd         # the dev agent; `all` builds dev, prod and devd
 scripts/sign dev           # sign into dist/, verify the signer, run the release checks
 scripts/ctl --install      # veil-ctl into dist/ and ~/.local/bin
-scripts/podman-run cargo test --workspace
-scripts/podman-run cargo deny check
-scripts/podman-run ./android/gradlew -p android testDebugUnitTest ktfmtCheck
+scripts/run cargo test --workspace
+scripts/run cargo deny check
+scripts/run ./android/gradlew -p android testDebugUnitTest ktfmtCheck
 ```
 
 `dev` and `prod` share the application ID and signing key, so either installs over the other

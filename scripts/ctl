@@ -2,22 +2,27 @@
 # Builds veil-ctl (dev/ctl), the laptop CLI for the dev agent, in the build
 # container, and copies it out of the container's target volume.
 #
-#   scripts/ctl              build, write dist/veil-ctl
+#   scripts/ctl              build, write dist/veil-ctl and
+#                            dist/veil-ctl-third-party-notices.txt
 #   scripts/ctl --install    also copy it to ~/.local/bin/veil-ctl
 #
-# The binary is built for x86_64 Linux with the container's glibc (Debian),
-# which runs on any newer host glibc.
+# The binary is static (x86_64-unknown-linux-musl), so it runs on any x86_64
+# Linux, whatever its glibc.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 install=false
 [[ ${1:-} == --install ]] && install=true
 
-"$repo/scripts/podman-run" cargo build --release --locked -p veil-ctl
+target=x86_64-unknown-linux-musl
+"$repo/scripts/run" cargo build --release --locked --target $target -p veil-ctl
 mkdir -p "$repo/dist"
-# The target directory lives in the veil-target volume, not in the repo.
-"$repo/scripts/podman-run" install -m 755 /cache/target/release/veil-ctl dist/veil-ctl
-echo "built dist/veil-ctl" >&2
+# The target directory is $CARGO_TARGET_DIR (a volume in the container), not in the repo.
+"$repo/scripts/run" sh -c "install -m 755 \"\${CARGO_TARGET_DIR:-target}/$target/release/veil-ctl\" dist/veil-ctl"
+# Its third-party notices, from the crate sources the build just fetched.
+"$repo/scripts/run" --offline cargo about generate --offline --locked -c about.toml \
+	--target $target -m dev/ctl/Cargo.toml about.hbs -o dist/veil-ctl-third-party-notices.txt
+echo "built dist/veil-ctl and dist/veil-ctl-third-party-notices.txt" >&2
 
 if $install; then
 	mkdir -p "$HOME/.local/bin"

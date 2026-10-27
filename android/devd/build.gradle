@@ -93,6 +93,11 @@ android {
 
 tasks.named('preBuild') { dependsOn cargoNdk }
 
+// Third-party notices (assets/third_party_notices.txt): see android/notices.gradle.
+ext.noticesRustManifest = 'android/devd-native/Cargo.toml'
+ext.noticesRustBuildTask = ':devd:cargoNdk'
+apply from: rootProject.file('notices.gradle')
+
 androidComponents {
     beforeVariants(selector().withBuildType('debug')) { it.enable = false }
 }

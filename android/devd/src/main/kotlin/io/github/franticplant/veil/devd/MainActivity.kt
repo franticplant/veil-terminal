@@ -284,6 +284,9 @@ class MainActivity : ComponentActivity() {
                 "API calls and devd's own log are in the Logs tab (persistent, hash-chained).",
                 style = MaterialTheme.typography.bodySmall,
             )
+            var showLicenses by remember { mutableStateOf(false) }
+            TextButton(onClick = { showLicenses = true }) { Text("Open-source licenses") }
+            if (showLicenses) LicensesDialog { showLicenses = false }
         }
     }
 

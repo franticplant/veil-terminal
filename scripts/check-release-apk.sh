@@ -20,7 +20,8 @@
 #                for arm64-v8a; third-party notices present; if the APK is
 #                signed, the signer is the pinned Veil certificate
 #
-# Runs in the build container (scripts/podman-run --offline ...), which has
+# Runs through scripts/run --offline (the build container locally, the pinned
+# runner toolchain in CI), which has
 # aapt2, dexdump and apksigner on PATH.
 set -euo pipefail
 

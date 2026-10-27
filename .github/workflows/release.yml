@@ -1,12 +1,13 @@
-# Builds the signed prod APK from a v* tag, attests it (SLSA build provenance
-# and an SPDX SBOM, via Sigstore) and publishes it as a GitHub release. Anyone
-# can check a download with:
+# Builds every target from a v* tag, signs the APKs, attests all files (SLSA
+# build provenance and an SPDX SBOM, via Sigstore) and publishes them as a
+# GitHub release. Anyone can check a download with:
 #   gh attestation verify <file> -R franticplant/veil-terminal
 #   sha256sum -c SHA256SUMS
 #
-# Only the prod APK is published. Dev Veil and devd are development tools: CI
-# signs them for pushes to main (ci.yml) and keeps them as workflow artifacts,
-# never as release assets.
+# Targets: Veil (prod), Veil dev (with the development control plane), devd
+# (the dev agent) and veil-ctl (its laptop CLI, static x86_64 Linux). Each
+# comes with its third-party notices. The release notes say which is for whom:
+# dev Veil and devd are development tools, not for everyday use.
 #
 # Triggered by pushing a tag like v0.1.0, or manually for an existing tag.
 # The tag decides: vX.Y.Z is a full release (shown as latest); a tag with a
@@ -60,10 +61,6 @@ jobs:
     outputs:
       sha: ${{ steps.head.outputs.sha }}
     steps:
-      # Plain directories instead of podman volumes. A release starts from
-      # empty caches: nothing from earlier runs goes into what we ship.
-      - name: Cache directory
-        run: echo "VEIL_CACHE_DIR=$RUNNER_TEMP/veil-cache" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TAG }}
@@ -85,19 +82,31 @@ jobs:
       - id: head
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: ./.github/actions/build-image
+      # The pinned toolchain, without build caches: nothing from earlier runs
+      # goes into what we ship.
+      - uses: ./.github/actions/setup-build
+        with:
+          cache: "false"
+          musl: "true"
 
       - name: Rust tests
-        run: scripts/podman-run cargo test --workspace --locked
+        run: scripts/run cargo test --workspace --locked
       - name: Dependency licenses and advisories
-        run: scripts/podman-run cargo deny --locked check
+        run: scripts/run cargo deny --locked check
 
-      - name: Build prod APK (unsigned; signed below)
+      - name: Build APKs (unsigned; signed below)
         env:
           VEIL_RELEASE_TAG: ${{ env.TAG }}
-        run: scripts/build prod
-      - name: Release check (no dev pieces)
-        run: scripts/podman-run --offline scripts/check-release-apk.sh android/app/build/outputs/apk/prod/release/app-prod-release-unsigned.apk
+        run: scripts/build all
+      - name: Release check (prod carries no dev pieces)
+        run: scripts/run --offline scripts/check-release-apk.sh android/app/build/outputs/apk/prod/release/app-prod-release-unsigned.apk
+      - name: Release check, inverted (dev must still be recognised)
+        run: scripts/run --offline scripts/check-release-apk.sh --expect-dev android/app/build/outputs/apk/dev/release/app-dev-release-unsigned.apk
+      - name: Build veil-ctl
+        run: |
+          scripts/ctl
+          mv dist/veil-ctl "dist/veil-ctl-$TAG-linux-x86_64"
+          mv dist/veil-ctl-third-party-notices.txt "dist/veil-ctl-$TAG-third-party-notices.txt"
 
       # scripts/sign checks the pinned certificate digest and runs the release
       # check again on the signed APK.
@@ -114,16 +123,20 @@ jobs:
           umask 077
           printf '%s' "$VEIL_KEYSTORE_BASE64" | base64 -d > "$VEIL_KEYSTORE"
           scripts/sign prod
+          scripts/sign dev
+          scripts/sign devd
       - name: Remove keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/veil-release.p12"
 
-      # The notices inside the APK, also as a file of their own.
+      # The notices inside each APK, also as a file of their own.
       - name: Third-party notices
         run: |
-          apk=$(ls dist/veil-*.apk)
-          unzip -p "$apk" assets/third_party_notices.txt > "dist/veil-$TAG-third-party-notices.txt"
-          test -s "dist/veil-$TAG-third-party-notices.txt"
+          for apk in dist/*.apk; do
+            out="${apk%.apk}-third-party-notices.txt"
+            unzip -p "$apk" assets/third_party_notices.txt > "$out"
+            test -s "$out"
+          done
 
       - name: Checksums
         run: |
@@ -218,7 +231,21 @@ jobs:
             generate="--generate-notes"
           fi
           cert=$(tr -d '[:space:]' < dev/signing/veil-release-cert.sha256)
+          v=${TAG#v}
           {
+            echo
+            echo "### Files"
+            echo
+            echo "| File | What it is |"
+            echo "|---|---|"
+            echo "| \`veil-$v.apk\` | **Veil.** Install this one. |"
+            echo "| \`veil-$v-dev.apk\` | Veil with the development control plane (DevHooks), for development with devd. Same app and key: installs over Veil, and back. |"
+            echo "| \`veil-devd-$v.apk\` | devd, the development agent: remote control of Veil over tether or tailnet, with pairing. For development only. |"
+            echo "| \`veil-ctl-$TAG-linux-x86_64\` | veil-ctl, the laptop CLI for devd. Static; any x86_64 Linux. |"
+            echo "| \`*-third-party-notices.txt\` | Third-party licenses of each of the above (also inside each APK). |"
+            echo "| \`*.idsig\` | APK signature scheme v4 files, for incremental install. |"
+            echo "| \`veil-$TAG.spdx.json\` | SBOM (SPDX). |"
+            echo "| \`SHA256SUMS\` | Checksums of every file. |"
             echo
             echo "---"
             echo "Built by [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) from \`$BUILD_SHA\`."

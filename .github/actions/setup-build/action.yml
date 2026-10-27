@@ -1,0 +1,122 @@
+# The pinned toolchain from build/toolchain.lock, installed on the runner (no
+# build container in CI): JDK, Android SDK packages and NDK, the Rust toolchain
+# from rust-toolchain.toml, the cargo tools from SHA-256-checked release
+# binaries, and optionally musl for the static veil-ctl. With `cache`, also the
+# cargo registry and target directory and Gradle's caches.
+#
+# Afterwards VEIL_HOST_TOOLCHAIN=1 is set, so scripts/run, scripts/build and
+# scripts/sign use these tools directly.
+name: Set up Veil build
+description: Pinned JDK, Android SDK/NDK, Rust and cargo tools, and build caches.
+
+inputs:
+  cache:
+    description: Restore and save the cargo and Gradle caches (off for releases).
+    default: "true"
+  musl:
+    description: Install musl-tools, for the static veil-ctl.
+    default: "false"
+  signing-only:
+    description: Only what signing and the release check need (JDK, build-tools).
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Read toolchain.lock
+      id: lock
+      shell: bash
+      run: |
+        set -a; . build/toolchain.lock; set +a
+        channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+        if [[ "$channel" != "$RUST_TOOLCHAIN" ]]; then
+          echo "::error::rust-toolchain.toml ($channel) and build/toolchain.lock ($RUST_TOOLCHAIN) disagree"
+          exit 1
+        fi
+        {
+          echo "jdk=$JDK_MAJOR"
+          echo "ndk=$ANDROID_NDK"
+          echo "hash=$(cat build/toolchain.lock build/install-cargo-tools.sh rust-toolchain.toml | sha256sum | cut -c1-16)"
+        } >> "$GITHUB_OUTPUT"
+
+    - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+      with:
+        distribution: temurin
+        java-version: ${{ steps.lock.outputs.jdk }}
+
+    - name: Cache Android NDK
+      if: inputs.signing-only != 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: /usr/local/lib/android/sdk/ndk/${{ steps.lock.outputs.ndk }}
+        key: android-ndk-${{ runner.os }}-${{ steps.lock.outputs.ndk }}
+
+    - name: Android SDK packages
+      shell: bash
+      run: |
+        . build/toolchain.lock
+        pkgs=("$ANDROID_PLATFORM" "build-tools;$ANDROID_BUILD_TOOLS")
+        if [[ "${{ inputs.signing-only }}" != true && ! -d "$ANDROID_HOME/ndk/$ANDROID_NDK" ]]; then
+          pkgs+=("ndk;$ANDROID_NDK")
+        fi
+        sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+        (yes | "$sdkmanager" --licenses > /dev/null) || true
+        "$sdkmanager" --install "${pkgs[@]}" > /dev/null
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK" >> "$GITHUB_ENV"
+        echo "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS" >> "$GITHUB_PATH"
+
+    - name: Cache Rust toolchain and cargo tools
+      if: inputs.signing-only != 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.rustup/toolchains
+          ~/.rustup/update-hashes
+          ~/.veil-tools
+        key: rust-tools-${{ runner.os }}-${{ steps.lock.outputs.hash }}
+
+    - name: Rust toolchain and cargo tools
+      if: inputs.signing-only != 'true'
+      shell: bash
+      run: |
+        # Installs the toolchain rust-toolchain.toml names, with its components
+        # and targets; rustup checks every component's hash.
+        rustup toolchain install
+        rustc --version
+        [[ -x ~/.veil-tools/cargo-about ]] || build/install-cargo-tools.sh build/toolchain.lock ~/.veil-tools
+        echo "$HOME/.veil-tools" >> "$GITHUB_PATH"
+
+    - name: musl-tools
+      if: inputs.musl == 'true'
+      shell: bash
+      run: |
+        . build/toolchain.lock
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends "musl-tools=$MUSL_TOOLS_UBUNTU"
+
+    - name: Cache cargo registry and target directory
+      if: inputs.cache == 'true' && inputs.signing-only != 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ~/.cache/veil-target
+        key: cargo-${{ runner.os }}-${{ steps.lock.outputs.hash }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: cargo-${{ runner.os }}-${{ steps.lock.outputs.hash }}-
+
+    - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      if: inputs.signing-only != 'true'
+      with:
+        cache-disabled: ${{ inputs.cache != 'true' }}
+        # Only main writes the Gradle cache; pull requests read it.
+        cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+    - name: Use the host toolchain
+      shell: bash
+      run: |
+        {
+          echo "VEIL_HOST_TOOLCHAIN=1"
+          echo "CARGO_TARGET_DIR=$HOME/.cache/veil-target"
+        } >> "$GITHUB_ENV"

@@ -6,7 +6,7 @@ updates:
   - package-ecosystem: "github-actions"
     directories:
       - "/"
-      - "/.github/actions/build-image"
+      - "/.github/actions/setup-build"
     schedule:
       interval: "weekly"
     commit-message:

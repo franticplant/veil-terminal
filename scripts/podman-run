@@ -14,8 +14,10 @@
 # --offline runs the container without a network, for steps that must not
 # fetch anything. Signing never happens here: see scripts/sign.
 #
-# The image tag is a hash of build/Containerfile, so editing the Containerfile
-# builds a new image on the next run and an unchanged one is reused.
+# The image tag hashes what the image is built from (scripts/lib/image-tag.sh),
+# so changing the Containerfile or build/toolchain.lock builds a new image on
+# the next run and an unchanged one is reused. Most scripts call scripts/run,
+# which uses this locally and the runner's toolchain in CI.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -26,8 +28,7 @@ if [[ ${1:-} == --offline ]]; then
 fi
 [[ $# -gt 0 ]] || { echo "usage: $0 [--offline] COMMAND..." >&2; exit 2; }
 
-tag=$(sha256sum "$repo/build/Containerfile" | cut -c1-16)
-image=localhost/veil-build:$tag
+image=$("$repo/scripts/lib/image-tag.sh" "$repo")
 if ! podman image exists "$image"; then
 	echo "building $image (build/Containerfile changed or first run)" >&2
 	podman build -t "$image" -f "$repo/build/Containerfile" "$repo/build" >&2
