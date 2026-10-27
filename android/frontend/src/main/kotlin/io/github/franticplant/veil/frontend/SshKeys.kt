@@ -105,10 +105,20 @@ class SshKeys(private val log: LogRing) : LoginSigner {
         }
         val private = ks.getKey(alias(keyId), null) as? PrivateKey ?: return null
         val der =
-            Signature.getInstance("SHA256withECDSA").run {
-                initSign(private)
-                update(request.data.toByteArray())
-                sign()
+            try {
+                Signature.getInstance("SHA256withECDSA").run {
+                    initSign(private)
+                    update(request.data.toByteArray())
+                    sign()
+                }
+            } catch (e: java.security.InvalidKeyException) {
+                // Keystore's refusal; for keys created "while unlocked" it means the phone is
+                // locked.
+                log.warn(
+                    "keys",
+                    "Keystore refused to use '$keyId' (is the phone locked?): ${e.message}",
+                )
+                return null
             }
         return SshUserauth.ecdsaSignatureBlob(der)
     }

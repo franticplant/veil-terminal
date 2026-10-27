@@ -3,6 +3,7 @@
 #
 #   scripts/testhost start ADDRESS [PORT]   build if needed, start, set a new password
 #   scripts/testhost password               print the current password
+#   scripts/testhost authorize 'PUBKEY'     let a public key log in as tester
 #   scripts/testhost stop
 #   (podman volume rm veil-testhost-keys gives it new host keys)
 #
@@ -55,12 +56,20 @@ start)
 password)
 	cat "$state/password"
 	;;
+authorize)
+	# Lets a public key log in as tester (until the container is recreated).
+	key=${2:-}
+	[[ $key == ssh-* || $key == ecdsa-* ]] || { echo "usage: $0 authorize 'ecdsa-sha2-nistp256 AAAA...'" >&2; exit 2; }
+	printf '%s\n' "$key" | podman exec -i "$name" sh -c \
+		'install -d -o tester -g tester -m 700 /home/tester/.ssh && cat >> /home/tester/.ssh/authorized_keys && chown tester:tester /home/tester/.ssh/authorized_keys && chmod 600 /home/tester/.ssh/authorized_keys'
+	echo "authorized for tester" >&2
+	;;
 stop)
 	podman rm -f "$name" > /dev/null && rm -f "$state/password"
 	echo "stopped" >&2
 	;;
 *)
-	echo "usage: $0 start ADDRESS [PORT] | password | stop" >&2
+	echo "usage: $0 start ADDRESS [PORT] | password | authorize PUBKEY | stop" >&2
 	exit 2
 	;;
 esac
