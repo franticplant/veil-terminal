@@ -31,10 +31,11 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      # Absolute: actions/cache rejects paths containing "..".
-      VEIL_CACHE_DIR: ${{ runner.temp }}/veil-cache
     steps:
+      # Absolute (actions/cache rejects paths containing ".."), and set from a
+      # step because job-level env cannot use the runner context.
+      - name: Cache directory
+        run: echo "VEIL_CACHE_DIR=$RUNNER_TEMP/veil-cache" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

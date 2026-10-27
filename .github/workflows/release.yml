@@ -59,11 +59,11 @@ jobs:
       attestations: write
     outputs:
       sha: ${{ steps.head.outputs.sha }}
-    env:
+    steps:
       # Plain directories instead of podman volumes. A release starts from
       # empty caches: nothing from earlier runs goes into what we ship.
-      VEIL_CACHE_DIR: ${{ runner.temp }}/veil-cache
-    steps:
+      - name: Cache directory
+        run: echo "VEIL_CACHE_DIR=$RUNNER_TEMP/veil-cache" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TAG }}
