@@ -1,86 +1,119 @@
 # Veil Terminal
 
-An Android SSH workstation that treats remote-facing protocol processing as hostile. The long-term
-design runs SSH, terminal parsing and other remote-facing code in separate compartments inside a
-pKVM-protected Microdroid VM, with networking, VM control, credentials and the UI split across
-separate Android identities. See [docs/design/0000-bootstrap-proposal.md](docs/design/0000-bootstrap-proposal.md) and,
-for where each component lives now and how it moves, [docs/design/0001-component-layout.md](docs/design/0001-component-layout.md).
+An Android SSH workstation built around compartments. Remote-facing SSH and terminal code runs in a
+protected Microdroid VM; the UI, Keystore signing, host-key policy and network broker stay in the
+main app. The VM host is a separate Android package with AVF permissions and no `INTERNET`. The
+native process engine remains an explicit fallback, never a silent substitution.
 
-What works today:
-- SSH sessions, with password, keyboard-interactive or key login. Keys are
-  ECDSA P-256 in Android Keystore or StrongBox, and the engine never sees
-  them. Host keys are trust-on-first-use; a changed key is refused.
-- A terminal for full-screen programs:
-  - 256 and true colors, mouse reporting, bracketed paste;
-  - copy-only OSC 52, asked first;
-  - scrollback, pinch to change the text size;
-  - fullscreen that can cover the notch, all orientations;
-  - themes, including AMOLED black.
-- Sessions that keep running in the background.
-- A typed development API (devd + veil-ctl) for driving the phone from a
-  laptop.
+The first VM release candidate is `v0.1.0-rc.1`, validated on a Pixel 8 running GrapheneOS.
 
-It is built incrementally: every stage is an APK you can install and use, and authority moves
-behind stronger boundaries over time. Today it is a skeleton: the UI talks to the Rust engine
-through the engine protocol, in one process.
+```mermaid
+flowchart LR
+  Remote[(SSH server)]
 
-## Layout
+  subgraph Main["Main APK · io.github.franticplant.veil"]
+    UI["UI / SessionRegistry"]
+    Keys["Keystore keys<br/>StrongBox / TEE"]
+    Pins["Host-key pins"]
+    Broker["Native network broker"]
+  end
+
+  subgraph VMHost[".vm APK · io.github.franticplant.veil.vm"]
+    Host["VmHostService / EngineProxy"]
+  end
+
+  subgraph Guest["Protected Microdroid guest"]
+    Engine["Rust SSH engine<br/>terminal + broker relay"]
+  end
+
+  subgraph Dev["devd APK · development only"]
+    Devd["TLS API / journal<br/>logs / metrics / updater"]
+  end
+
+  UI -->|engine protocol| Host
+  Host <-->|vsock 5000| Engine
+  UI --> Keys
+  UI --> Pins
+  Engine -.->|SignRequest| UI
+  Broker -->|TCP| Remote
+  Broker -->|connected fd| Host
+  Host <-->|vsock 5001| Engine
+  Devd -.->|typed Binder| UI
+  Devd -.->|VM probe and status| Host
+```
+
+Today the main app still holds `INTERNET` and the SSH signing authority. The planned `.net` package
+will own networking and `.vault` will own key use; neither is part of this release.
+
+## What it does
+
+- SSH with password, keyboard-interactive or key login. Keys are ECDSA P-256 in Android Keystore,
+  using StrongBox where available; the engine never sees a private key.
+- Post-quantum hybrid key exchange (`mlkem768x25519-sha256`) by default, with classical only for
+  explicitly allowed hosts.
+- Host keys are pinned by the app for both native and VM sessions; a changed key is refused.
+- A real terminal: true color, mouse, bracketed paste, scrollback, pinch-to-resize, fullscreen,
+  notch coverage, themes, and copy-only OSC 52.
+- Sessions continue in the background; the VM host is a foreground service.
+- VM host metrics, VM console logs and guest uptime are exposed through devd and `veil-ctl`.
+- Native engine choice remains available for comparison and recovery; VM failure is reported, not
+  hidden.
+
+## Install
+
+For VM mode, install both APKs and grant the one-time AVF permissions:
+
+```sh
+scripts/grant-avf
+```
+
+Then open Veil → Settings → Engine → **VM (Microdroid)** and restart Veil. Native mode needs only
+the main APK. `devd` and the dev APK are development tools and are not required in production.
+
+## Repository map
 
 | Path | What |
 |---|---|
-| `proto/` | The engine protocol schema, shared by Rust and Kotlin |
-| `core/protocol` | Rust protocol types, limits, checked decoding |
-| `core/engine` | The engine (no Android dependencies) |
-| `core/term` | The terminal emulator boundary: remote bytes in, plain frames out |
-| `core/caps` | Capabilities the engine is handed: `Dialer`, `HostKeyStore` |
-| `core/obs` | Log ring and counters |
-| `core/wire` | Framing for the protocol on streams (process / VM boundary) |
-| `guest/engine-host` | The engine as its own process on a stream (the Microdroid payload's core) |
-| `android/jni` | The JNI byte pipe into the engine (`libveil_jni.so`) |
-| `android/engine-client` | Kotlin: `EngineBackend`, `EngineConnection`, the native pipe |
-| `android/frontend` | The disposable v0.x UI; depends only on `engine-client` |
-| `android/app` | The package: `dev` and `prod` flavors of one application ID |
-| `build/Containerfile` | The only build environment, local and CI |
-| `scripts/` | Build, sign, release checks |
-| `android/devd` | The dev agent package: listener, pairing, updater (never on a production setup) |
-| `android/devapi` | The dev API's method specs and the DevHooks Binder interface |
-| `dev/ctl` | `veil-ctl`, the laptop CLI for the dev agent |
-| `dev/signing` | The public signing certificate and its pinned digest |
+| `proto/`, `core/protocol` | Engine protocol schema and checked Rust types |
+| `core/engine` | SSH sessions, prompts, framing, rendered frames |
+| `core/term` | Terminal emulation boundary |
+| `core/caps` | `Dialer`, `HostKeyStore` capability traits |
+| `core/obs` | Log rings, counters, process metrics |
+| `guest/engine-host` | Engine on a stream; the native host and the VM payload's core |
+| `guest/vm-engine` | Microdroid payload and guest broker |
+| `android/app` | Main APK: UI, session coordination, Keystore signer, host-key pins |
+| `android/vm` | `.vm` APK: AVF host, VM lifecycle, relay, VM metrics |
+| `android/engine-client` | Kotlin engine protocol, backends, native broker |
+| `android/devd`, `android/devapi`, `dev/ctl` | Development control plane and laptop CLI |
+| `docs/design/0001-component-layout.md` | Current and planned component boundaries |
 
-## Building
-
-Locally, everything builds in throwaway podman containers; the host needs only podman and git.
-The toolchain is pinned in `build/toolchain.lock`: the container is built from it, and CI installs
-the same list on its runners. `scripts/run` runs a command with that toolchain.
+## Build
 
 ```sh
-scripts/build dev          # unsigned dev APK (first run builds the container image)
-scripts/build devd         # the dev agent; `all` builds dev, prod and devd
-scripts/sign dev           # sign into dist/, verify the signer, run the release checks
-scripts/ctl --install      # veil-ctl into dist/ and ~/.local/bin
-scripts/run cargo test --workspace
-scripts/run cargo deny check
-scripts/run ./android/gradlew -p android testDebugUnitTest ktfmtCheck
+scripts/build all           # app dev + prod, devd, .vm APK
+scripts/sign prod           # sign and verify the release APK
+scripts/sign dev            # dev APK, with DevHooks
+scripts/sign vm             # VM host APK
+scripts/sign devd           # development agent
+scripts/ctl --install       # veil-ctl into dist/ and ~/.local/bin
 ```
 
-`dev` and `prod` share the application ID and signing key, so either installs over the other
-(within Android's no-downgrade rule). Only `dev` carries the development control plane, and
-`scripts/check-release-apk.sh` fails any prod APK that contains it.
+`scripts/build` and `scripts/sign` run in the pinned build environment. Rust checks and Android
+tests are described in [docs/dev-control.md](docs/dev-control.md).
 
-## Driving a phone
+## Verify a release
 
-Dev builds are controlled from the laptop through a typed API (no shell),
-served by the separate dev agent devd and called with `veil-ctl`:
+Every release is signed with the pinned Veil key and carries checksums, third-party notices, an
+SPDX SBOM and GitHub attestations.
 
 ```sh
-veil-ctl -a PHONE:7390 pair              # once; approve on the phone
-veil-ctl update dist/veil-VERSION-dev.apk
-veil-ctl scenario connect-echo host=HOST user=USER password=PASSWORD
-veil-ctl logs engine -f
+sha256sum -c SHA256SUMS
+gh attestation verify <file> -R franticplant/veil-terminal
 ```
 
-Setup, scopes, the method list and the security model are described in
-[docs/dev-control.md](docs/dev-control.md).
+More: [component layout](docs/design/0001-component-layout.md),
+[development control](docs/dev-control.md),
+[release notes](docs/release-notes/v0.1.0-rc.1.md).
 
 ## License
 

@@ -96,15 +96,16 @@ Pushing a tag `vX.Y.Z` does the following:
 1. **SBOM.** An SPDX SBOM is generated from the pristine checkout.
 2. **Tests and dependency checks.** Rust tests and `cargo deny` run again,
    at the tag.
-3. **Build.** `scripts/build all` builds Veil (prod and dev) and devd with
-   `VEIL_RELEASE_TAG`, and `scripts/ctl` builds veil-ctl (static, musl). The
-   versionName becomes the tag without its `v`. The build refuses a dirty
-   tree, or a HEAD that is not the tag's commit. The release caches start
-   empty: nothing from earlier runs goes into what ships.
+3. **Build.** `scripts/build all` builds Veil (prod and dev), devd and the
+   `.vm` host with `VEIL_RELEASE_TAG`, and `scripts/ctl` builds veil-ctl
+   (static, musl). The versionName becomes the tag without its `v`. The build
+   refuses a dirty tree, or a HEAD that is not the tag's commit. The release
+   caches start empty: nothing from earlier runs goes into what ships.
 4. **Release check** on the unsigned prod APK, and inverted on the dev APK.
-5. **Signing.** `scripts/sign` signs each APK on the runner, in the only job
-   that holds the key. Locally it signs in a container without network. It refuses a certificate other than the pinned one, and runs the
-   release check again on the signed APK.
+5. **Signing.** `scripts/sign` signs each APK (`prod`, `dev`, `devd`, `vm`)
+   on the runner, in the only job that holds the key. Locally it signs in a
+   container without network. It refuses a certificate other than the pinned
+   one, and runs the release check again on the signed APK.
 6. **Notices and attestations.** Each APK's notices are extracted as a file
    of their own, next to veil-ctl's. `SHA256SUMS` is written, then a SLSA build-provenance
    attestation and an SBOM attestation over every file (Sigstore, through
@@ -118,7 +119,7 @@ Pushing a tag `vX.Y.Z` does the following:
      own `apksigner` against the tag's pinned digest;
    - the release is created with all its assets at once. The tag decides what
      kind of release it is: `vX.Y.Z` is a full release, shown as latest; a tag
-     with a suffix (`v0.1.1-pre.1`, `-rc1`) is a pre-release. Between full
+     with a suffix (`v0.1.1-pre.1`, `v0.1.0-rc.1`) is a pre-release. Between full
      releases, builds are tagged with a suffix. The notes come from
      `docs/release-notes/<tag>.md` when that file exists.
 
@@ -126,14 +127,15 @@ Every target is published:
 
 - Veil;
 - Veil dev;
+- the `.vm` host;
 - devd;
 - veil-ctl;
 - the third-party notices of each.
 
 The release notes carry a table of the files, saying which one to install
-(`veil-X.Y.Z.apk`) and that dev Veil and devd are development tools. The dev
-APK includes DevHooks, and devd is a remote-control agent: both are useful
-only when you want them, and devd requires pairing on the phone.
+(`veil-X.Y.Z.apk`) and that the `.vm` APK is required for VM mode. Dev Veil
+and devd are development tools; the dev APK includes DevHooks, and devd is a
+remote-control agent, so both are useful only when you want them.
 
 ### Checking a download
 

@@ -13,6 +13,7 @@ section 5.
 | devd | `android/devd`, package `io.github.franticplant.veil.devd` | The dev agent: listener, pairing, scopes, access log, updater. Never on a production setup. |
 | DevHooks | `android/app/src/dev` | A Binder service in Veil's **dev flavor only**; devd reaches Veil through it. A prod APK does not contain it (`scripts/check-release-apk.sh` checks). |
 | devapi | `android/devapi` | Method specs, parameter checking, the `IDevHooks` interface. |
+| `.vm` | `android/vm`, package `io.github.franticplant.veil.vm` | Optional VM host. devd can probe it, read its logs and metrics, and stop the engine. It has AVF permissions, no `INTERNET`, and no SSH keys. |
 | veil-ctl | `dev/ctl` | The laptop CLI. |
 
 devd and Veil are signed with the same key, and DevHooks is guarded by a
@@ -22,11 +23,16 @@ where both come from the Veil key.
 ## Build
 
 ```sh
-scripts/build all            # Veil dev + prod and devd, unsigned
+scripts/build all            # Veil dev + prod, devd and .vm, unsigned
 scripts/sign dev             # needs VEIL_KEYSTORE / VEIL_KEYSTORE_PASSWORD
+scripts/sign vm
 scripts/sign devd
 scripts/ctl --install        # veil-ctl into dist/ and ~/.local/bin
 ```
+
+For VM mode, install the main APK and the `.vm` APK, then grant the AVF
+permissions once with `scripts/grant-avf`. The `.vm` APK is optional for
+native mode but required for `engine=vm`.
 
 ## First install (once per phone)
 
@@ -119,10 +125,12 @@ chain rebuilt. `veil-ctl journal` covers that case:
    there with the same hash.
 3. It records the current head as the new anchor.
 
-On the phone, devd's **Logs** tab reads the journal, Veil's app log and the
-engine log. It highlights syntax, searches, filters by level and component,
-follows new entries, expands an entry to every field, and shows the chain's
-state.
+On the phone, devd's **Logs** tab reads the journal, Veil's app log, the
+engine log and the VM host console. It highlights syntax, searches, filters
+by level and component, follows new entries, expands an entry to every field,
+and shows the chain's state. From the laptop, `veil-ctl logs vm` reads the VM
+host console; `veil-ctl logs app` and `veil-ctl logs engine` read the other
+rings.
 
 ## Keys
 
@@ -166,11 +174,13 @@ lead to the laptop.
 ## Daily loop
 
 ```sh
-scripts/build dev && scripts/sign dev
+scripts/build all && scripts/sign dev && scripts/sign vm && scripts/sign devd
+scripts/grant-avf                  # once, if VM mode is new
 veil-ctl update dist/veil-<version>-dev.apk
+veil-ctl update dist/veil-vm-<version>.apk
 veil-ctl status                    # devd, packages, Veil process and engine
 veil-ctl scenario connect-echo host=<test host> user=<user> password=<test password>
-veil-ctl logs engine -f            # or: logs app, logs devd
+veil-ctl logs engine -f            # or: logs app, logs vm, logs devd
 veil-ctl journal                   # check devd's journal chain and anchor
 veil-ctl call app.exits            # why recent Veil processes ended (crash, ANR, update, ...)
 ```
@@ -183,8 +193,9 @@ because it never installs a downgrade.
 
 ## Metrics and memory
 
-devd samples every Veil process (app, engine) and itself every 2 s while its
-listener runs, and keeps 30 minutes. The Metrics tab on the phone charts them:
+devd samples every Veil process (app, VM host, guest engine) and itself every
+2 s while its listener runs, and keeps 30 minutes. The Metrics tab on the
+phone charts them:
 
 - pinch to zoom the time window;
 - drag sideways to scroll back;
@@ -194,13 +205,17 @@ listener runs, and keeps 30 minutes. The Metrics tab on the phone charts them:
 From the laptop:
 
 ```sh
-veil-ctl top                       # live table
+veil-ctl top                       # devd, veil-app, veil-vm and veil-engine
+veil-ctl call vm.stats             # VM host process, boot time and relays
 veil-ctl call metrics.history prefixes:='["veil-engine."]'
 veil-ctl call devd.smaps top=40    # devd's PSS by mapping (boot image, heap, native, code)
 veil-ctl call devd.threads         # live threads with their stack tops
 ```
 
-What the numbers mean on GrapheneOS, and the budget, are in
+`veil-ctl top` shows the VM host as `veil-vm`; the guest engine appears as
+`veil-engine` with the PSS reported by the guest. The app, VM host and guest
+are separate processes, so the total is the sum of the rows, not the app row
+alone. What the numbers mean on GrapheneOS, and the historical budget, are in
 [design/0003](design/0003-memory-budget.md).
 
 ## Calling methods

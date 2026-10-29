@@ -1,7 +1,8 @@
-# Component layout: today, and on the way to Microdroid
+# Component layout: today, with the VM
 
-Status: describes the code as of 2026-10-27, and how each piece moves. The
-target architecture is in [0000](0000-bootstrap-proposal.md), sections 3 to 4.
+Status: describes the code as of 2026-10-29, after the first protected-VM
+release candidate (`v0.1.0-rc.1`). The target architecture is in
+[0000](0000-bootstrap-proposal.md), sections 3 to 4.
 
 The rule this layout follows: every boundary that will one day cross a
 process or a VM already exists in the code. It carries encoded messages or
@@ -18,12 +19,14 @@ itself does not change.
 | `core/term` | Terminal emulator: remote bytes in, plain frames out | Engine, app process | Guest: VT worker |
 | `core/engine` | Sessions, SSH (russh), prompts, frame pacing | Native process `veil-engine-host` (default); `:engine` service or app process (JNI) as fallbacks | Guest: SSH worker + supervisor |
 | `core/obs` | Log ring, counters | Engine | Every component, exposed over its protocol |
-| `core/caps` | `Dialer`, `HostKeyStore` (traits + local implementations) | Engine, local implementations | Traits in the guest; the implementations are Android brokers |
+| `core/caps` | `Dialer`, `HostKeyStore` (traits) | Engine; frontend pins are the host-key authority | Traits in the guest; the implementations are Android brokers |
 | `guest/engine-host` | `serve()`: one engine on one stream | Shipped in the APK as `libveil_engine_host.so`, run by `HostBackend` over stdio | The Microdroid payload's core (vsock) |
-| `android/jni` | Byte pipe into the engine | App process (the "in app" and "service" backends) | Gone (or kept for a local fallback backend) |
-| `android/engine-client` | `EngineConnection`, `SessionRegistry`, `ScreenModel`, `LoginSigner`, `NativePipe`, `StreamPipe`, backends (`HostBackend`, `ProcessBackend`, `LocalBackend`) | App | App: the broker ([0002](0002-frontends-and-remote-access.md)) |
-| `frontend` | Disposable UI, `SshKeys` (Keystore signer) | App | App; `SshKeys` moves to the Vault package |
-| `devd`, `devapi` | Dev control plane: native TLS server (`devd-native`), journal, metrics; its screen in a `:ui` process | Separate package | Separate package; also drives the VM broker |
+| `guest/vm-engine` | Microdroid payload: engine protocol on 5000 and host broker on 5001 | `.vm` APK payload | The protected guest |
+| `android/jni` | Byte pipe into the engine | App process (the "in app" and "service" backends) | Local fallback only |
+| `android/engine-client` | `EngineConnection`, `SessionRegistry`, `ScreenModel`, `LoginSigner`, `NativePipe`, `StreamPipe`, `VmBackend`, `NetBroker`, backends | App | App: coordinator and broker |
+| `android/vm` | AVF host, `VmHostService`, `EngineProxy`, VM metrics/logs; no `INTERNET` | `.vm` APK | `.vm` APK |
+| `frontend` | Disposable UI, `SshKeys` (Keystore signer), host-key pins | App | App; `SshKeys` moves to the Vault package |
+| `devd`, `devapi` | Dev control plane: native TLS server (`devd-native`), journal, metrics; its screen in a `:ui` process | Separate package | Separate package; also drives the VM host |
 
 ## Boundaries
 
@@ -46,14 +49,15 @@ itself does not change.
   checks the request is a login before Keystore/StrongBox signs it. In the
   layout the signer is the Vault package; the protocol message stays the
   same.
-- **Network.** The engine asks a `Dialer`. Today `DirectDialer` connects
-  from the app process. Later the Network Broker (the only package with
-  `INTERNET`) connects and hands over the stream: an fd within Android,
-  or a vsock-forwarded stream into the VM, since fds cannot cross the VM
-  boundary (0000 §10.12).
-- **Host keys.** The engine asks a `HostKeyStore`. Today `FileHostKeys` is a
-  file in the app's data directory. Later the policy core keeps it on the
-  Android side and the guest asks over the protocol.
+- **Network.** The engine asks a `Dialer`. Native mode dials directly;
+  VM mode uses `NetBroker` (a native process in the main APK) to dial the
+  SSH endpoint and passes the connected fd to `.vm`, which relays it to the
+  guest broker on vsock 5001. Later the Network Broker package owns the
+  `INTERNET` permission and the same broker contract.
+- **Host keys.** The engine asks a `HostKeyStore`. The frontend pin store is
+  authoritative for native and VM sessions; the guest always asks and the
+  app answers. The old per-backend `known_hosts` file is not a competing
+  trust authority.
 - **Rendering.** Only `Frame`s of plain cells leave the engine.
   `ScreenModel` validates every frame with the same rules as
   `veil_protocol::check_frame`. The engine's randomized tests check those
@@ -68,13 +72,15 @@ itself does not change.
    are native processes or VMs for that reason.
 2. **Brokered network.** Implement `Dialer` over a request to the app (or
    the Network Broker), which returns a connected stream.
-3. **The VM.** The `<base>.vm` package boots a Microdroid payload running
-   `serve()` on vsock. The app's `VmBackend` gets the vsock fd from AVF and
-   wraps it in `StreamPipe`. The probe track (0000 §8b) has to settle the
-   permission grant and the guest UID model first.
+3. **The VM. Done for the first release candidate.** The `<base>.vm`
+   package boots a Microdroid payload running `serve()` on vsock 5000; the
+   app's `VmBackend` gets the vsock fd from AVF. A separate host broker
+   relays network streams over vsock 5001. `.vm` has AVF permissions, no
+   `INTERNET` and no keys.
 4. **Guest roles.** Split the engine into SSH and VT workers. The cut is
    between `core/engine` (SSH) and `core/term` (terminal state), joined by
-   the same kind of framed stream.
+   the same kind of framed stream. The first VM release still runs the
+   engine as one guest payload.
 
 ## Not here yet
 
@@ -82,7 +88,9 @@ itself does not change.
   [0002](0002-frontends-and-remote-access.md).
 - A capability *ledger* (who granted what to whom, `caps.ledger` in the dev
   API). The traits exist; recording grants comes with the first broker.
-- The Vault, Network Broker and VM packages themselves (0000 §3, §9).
+- The Vault and Network Broker packages (0000 §3, §9). The `.vm` package
+  exists; its class split and stricter end-to-end lease routing are follow-up
+  work.
 - Post-quantum *authentication*. Key exchange is post-quantum already
   (`mlkem768x25519-sha256`, required by default). Signatures stay ECDSA
   P-256 in StrongBox until SSH has interoperable post-quantum signature

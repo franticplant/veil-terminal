@@ -3,6 +3,13 @@
 Status: measured 2026-10-27 on a Pixel 8 running GrapheneOS, with devd's
 metrics and `devd.smaps`. Targets: **devd ≤ 50 MB, Veil (app + engine) ≤ 75 MB.**
 
+> **VM release note (2026-10-29).** The first protected-VM release adds a
+> separate `veil-vm` host process and a Microdroid guest. Observed with
+> `veil-ctl top`: app PSS ~55–80 MB, VM host ~60–75 MB, guest ~7 MB. The
+> historical 75 MB target applies to the native-engine layout and is **not**
+> a total VM budget. Measure app + VM host + guest separately until a new
+> VM budget is agreed.
+
 ## How we measure
 
 - **PSS** (proportional set size) is the headline number. Shared pages are
