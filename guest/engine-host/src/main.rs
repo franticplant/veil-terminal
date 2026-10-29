@@ -10,8 +10,9 @@
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
-use veil_engine::EngineConfig;
+use veil_engine::{EngineConfig, NoHostKeys};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -64,7 +65,9 @@ fn main() -> ExitCode {
         version,
         data_dir,
         dialer: None,
-        host_keys: None,
+        // The Android frontend owns host-key policy for every backend. The
+        // engine asks for a decision; it never trusts a local file on its own.
+        host_keys: Some(Arc::new(NoHostKeys)),
     };
     let result = match mode {
         Some((m, _)) if m == "stdio" => {

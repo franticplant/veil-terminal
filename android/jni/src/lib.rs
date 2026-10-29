@@ -22,7 +22,7 @@ use jni::objects::{JByteArray, JClass, JString};
 use jni::strings::JNIString;
 use jni::sys::{jint, jlong};
 use jni::{Env, EnvUnowned, errors::ThrowRuntimeExAndDefault, jni_str};
-use veil_engine::{Engine, EngineConfig, Recv};
+use veil_engine::{Engine, EngineConfig, NoHostKeys, Recv};
 
 static ENGINES: LazyLock<Mutex<HashMap<jlong, Arc<Engine>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -65,7 +65,8 @@ pub extern "system" fn Java_io_github_franticplant_veil_engine_NativeEngine_open
                 version,
                 data_dir: Some(data_dir.into()),
                 dialer: None,
-                host_keys: None,
+                // Host-key policy is frontend-owned in every engine backend.
+                host_keys: Some(Arc::new(NoHostKeys)),
             };
             let engine = match Engine::start(config) {
                 Ok(engine) => engine,
@@ -170,7 +171,8 @@ pub extern "system" fn Java_io_github_franticplant_veil_engine_NativeEngine_serv
                 version,
                 data_dir: Some(data_dir.into()),
                 dialer: None,
-                host_keys: None,
+                // Host-key policy is frontend-owned in every engine backend.
+                host_keys: Some(Arc::new(NoHostKeys)),
             };
             if let Err(e) = veil_engine_host::serve(config, reader, sock) {
                 return throw_closed(env, format!("engine stream ended: {e}"));

@@ -105,6 +105,13 @@ class VeilApplication : Application(), EngineHost {
             "app",
             "process started: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
         )
+        // Current product: frontend pins are the only host-key authority. The
+        // old per-backend known_hosts file is deliberately discarded rather
+        // than migrated; hosts will be trusted once through the normal prompt.
+        val legacyKnownHosts = File(engineDir, "known_hosts")
+        if (legacyKnownHosts.isFile && legacyKnownHosts.delete()) {
+            log.info("hostkeys", "discarded legacy native known_hosts; frontend pins are authoritative")
+        }
         // Keep the process in the foreground while any session is live.
         appScope.launch { SessionService.follow(this@VeilApplication, sessions) }
     }
