@@ -5,7 +5,7 @@ protected Microdroid VM; the UI, Keystore signing, host-key policy and network b
 main app. The VM host is a separate Android package with AVF permissions and no `INTERNET`. The
 native process engine remains an explicit fallback, never a silent substitution.
 
-The first VM release candidate is `v0.1.0-rc.1`, validated on a Pixel 8 running GrapheneOS.
+The current VM release candidate is `v0.1.0-rc.2`, validated on a Pixel 8 running GrapheneOS.
 
 ```mermaid
 flowchart LR
@@ -114,7 +114,7 @@ gh attestation verify <file> -R franticplant/veil-terminal
 
 More: [component layout](docs/design/0001-component-layout.md),
 [development control](docs/dev-control.md),
-[release notes](docs/release-notes/v0.1.0-rc.1.md).
+[release notes](docs/release-notes/v0.1.0-rc.2.md).
 
 ## License
 
