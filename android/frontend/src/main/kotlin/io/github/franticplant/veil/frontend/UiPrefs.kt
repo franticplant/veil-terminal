@@ -50,6 +50,8 @@ class UiPrefs(context: Context) {
         val keysWhileUnlocked: Boolean = true,
         /** Where the engine runs (applies at the next start). */
         val engine: EnginePlace = EnginePlace.NATIVE,
+        /** Guest RAM for the Microdroid engine (applies at the next start). */
+        val vmMemoryMiB: Int = 128,
     )
 
     private val _values =
@@ -73,6 +75,7 @@ class UiPrefs(context: Context) {
                 engine =
                     runCatching { EnginePlace.valueOf(prefs.getString("engine", "NATIVE")!!) }
                         .getOrDefault(EnginePlace.NATIVE),
+                vmMemoryMiB = prefs.getInt("vmMemoryMiB", 128).coerceIn(32, 1024),
             )
         )
 
@@ -95,6 +98,7 @@ class UiPrefs(context: Context) {
             putBoolean("bellFlash", v.bellFlash)
             putBoolean("keysWhileUnlocked", v.keysWhileUnlocked)
             putString("engine", v.engine.name)
+            putInt("vmMemoryMiB", v.vmMemoryMiB)
         }
         _values.value = v
     }

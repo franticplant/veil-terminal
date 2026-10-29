@@ -27,6 +27,7 @@ class VmBackend(
     private val context: Context,
     private val dataDir: File,
     private val protectedVm: Boolean = true,
+    private val memoryMiB: Int = 128,
     private val log: LogRing? = null,
 ) : EngineBackend {
     override val kind = "vm"
@@ -98,6 +99,28 @@ class VmBackend(
         }
 
     private fun bindAndStart(): Handle {
+        var last: Exception? = null
+        repeat(2) { attempt ->
+            try {
+                return bindAndStartOnce()
+            } catch (e: Exception) {
+                last = e
+                log?.warn(
+                    "vm",
+                    "VM host start attempt ${attempt + 1} failed: " +
+                        "${e.javaClass.simpleName}: ${e.message}",
+                )
+                if (attempt == 0) {
+                    // A stale VM host can die while the old app process is going
+                    // away. Give it a moment, then bind a fresh service instance.
+                    Thread.sleep(350)
+                }
+            }
+        }
+        throw last ?: IllegalStateException("VM host start failed")
+    }
+
+    private fun bindAndStartOnce(): Handle {
         val connected = CountDownLatch(1)
         var remote: IVmHost? = null
         var failure: String? = null
@@ -127,7 +150,7 @@ class VmBackend(
             }
             failure?.let { throw IllegalStateException(it) }
             val host = remote ?: throw IllegalStateException("no VM host binder")
-            val pfds = host.startEngine(protectedVm)
+            val pfds = host.startEngine(protectedVm, memoryMiB)
             active = host
             keep = true
             return Handle(context, connection, host, pfds) {

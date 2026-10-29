@@ -1541,6 +1541,20 @@ private fun SettingsDialog(prefs: UiPrefs, onDismiss: () -> Unit) {
                         "JVM, the lightest. Service: a Java process of its own. In app: inside Veil.",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                Text("VM guest memory", style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (mib in listOf(64, 96, 128, 192, 256)) {
+                        FilterChip(
+                            selected = ui.vmMemoryMiB == mib,
+                            onClick = { prefs.update { it.copy(vmMemoryMiB = mib) } },
+                            label = { Text("$mib MiB") },
+                        )
+                    }
+                }
+                Text(
+                    "Applies to the next VM start. Lower values need testing; 128 MiB is the current default.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 Text("Keys", style = MaterialTheme.typography.labelLarge)
                 SettingSwitch("New keys usable only while unlocked", ui.keysWhileUnlocked) { on ->
                     prefs.update { it.copy(keysWhileUnlocked = on) }

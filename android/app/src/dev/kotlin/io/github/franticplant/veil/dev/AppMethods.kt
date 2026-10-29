@@ -936,6 +936,7 @@ class AppMethods(private val app: VeilApplication) {
                 .put("bellFlash", v.bellFlash)
                 .put("keysWhileUnlocked", v.keysWhileUnlocked)
                 .put("engine", v.engine.name.lowercase())
+                .put("vmMemoryMiB", v.vmMemoryMiB)
 
         table.add(method("settings.get", Scope.READ, "The app's settings.")) {
             json(app.uiPrefs.values.value)
@@ -973,6 +974,12 @@ class AppMethods(private val app: VeilApplication) {
                         "process, inside the app, or the Microdroid VM.",
                     choices = listOf("native", "service", "local", "vm"),
                 ),
+                int(
+                    "vmMemoryMiB",
+                    "Microdroid guest RAM in MiB (next start; default 128).",
+                    min = 32,
+                    max = 1024,
+                ),
             )
         ) { p ->
             app.uiPrefs.update { v ->
@@ -1000,6 +1007,7 @@ class AppMethods(private val app: VeilApplication) {
                                 p.string("engine").uppercase()
                             )
                         else v.engine,
+                    vmMemoryMiB = p.intOr("vmMemoryMiB", v.vmMemoryMiB).coerceIn(32, 1024),
                 )
             }
             json(app.uiPrefs.values.value)

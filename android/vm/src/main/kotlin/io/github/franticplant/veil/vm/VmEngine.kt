@@ -40,7 +40,7 @@ object VmEngine {
         val managerClass: Class<*>,
     )
 
-    fun start(context: Context, protected: Boolean): Handle =
+    fun start(context: Context, protected: Boolean, memoryMiB: Int): Handle =
         synchronized(lock) {
             val managerClass = Class.forName("android.system.virtualmachine.VirtualMachineManager")
             val manager =
@@ -56,7 +56,12 @@ object VmEngine {
             builderClass
                 .getMethod("setPayloadBinaryName", String::class.java)
                 .invoke(builder, "libveil_vm_engine.so")
-            optionalLong(builderClass, builder, "setMemoryBytes", 128L * 1024 * 1024)
+            optionalLong(
+                builderClass,
+                builder,
+                "setMemoryBytes",
+                memoryMiB.toLong() * 1024 * 1024,
+            )
             optionalInt(builderClass, builder, "setCpuTopology", 0)
             optional(builderClass, builder, "setShouldUseHugepages", true)
             optionalInt(builderClass, builder, "setDebugLevel", 1)

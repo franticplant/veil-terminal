@@ -52,7 +52,12 @@ class VeilApplication : Application(), EngineHost {
                 ProcessBackend(this, BuildConfig.VERSION_NAME, engineDir)
             UiPrefs.EnginePlace.LOCAL -> LocalBackend(BuildConfig.VERSION_NAME, engineDir)
             UiPrefs.EnginePlace.VM ->
-                VmBackend(this, engineDir, log = log)
+                VmBackend(
+                    this,
+                    engineDir,
+                    memoryMiB = uiPrefs.values.value.vmMemoryMiB,
+                    log = log,
+                )
         }
     }
 

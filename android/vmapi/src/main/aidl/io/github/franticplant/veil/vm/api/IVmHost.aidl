@@ -18,7 +18,7 @@ interface IVmHost {
      * Boots the fixed engine payload and returns two pipe ends: [0] writes to
      * the VM, [1] reads from it. The VM host proxies them to vsock.
      */
-    ParcelFileDescriptor[] startEngine(boolean protectedVm);
+    ParcelFileDescriptor[] startEngine(boolean protectedVm, int memoryMiB);
 
     /** Relays an already-connected TCP socket to the guest broker. */
     void dial(String host, int port, in ParcelFileDescriptor tcp);

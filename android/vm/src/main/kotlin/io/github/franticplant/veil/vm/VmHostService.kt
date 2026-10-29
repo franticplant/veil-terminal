@@ -26,14 +26,17 @@ class VmHostService : Service() {
             override fun probe(protectedVm: Boolean): String =
                 VmProbe.run(this@VmHostService, protectedVm).also { log(it) }
 
-            override fun startEngine(protectedVm: Boolean): Array<ParcelFileDescriptor> =
+            override fun startEngine(
+                protectedVm: Boolean,
+                memoryMiB: Int,
+            ): Array<ParcelFileDescriptor> =
                 synchronized(this@VmHostService) {
                     engine?.let {
                         it.stop()
                         engine = null
                     }
                     val proxy = EngineProxy(this@VmHostService)
-                    val pfds = proxy.start(protectedVm)
+                    val pfds = proxy.start(protectedVm, memoryMiB.coerceIn(32, 1024))
                     engine = proxy
                     pfds
                 }
@@ -59,25 +62,38 @@ class VmHostService : Service() {
             override fun engineLog(): String = VmEngine.logText()
         }
 
-    override fun onBind(intent: Intent?): IBinder = binder
+    override fun onBind(intent: Intent?): IBinder {
+        // Binding can happen before onStartCommand, and starting Microdroid can
+        // take several seconds. Become foreground before the first Binder call
+        // so LMK does not kill us halfway through boot.
+        ensureForeground()
+        return binder
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Veil VM", NotificationManager.IMPORTANCE_LOW)
-        )
-        val notification =
-            Notification.Builder(this, CHANNEL)
-                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-                .setContentTitle("Veil VM running")
-                .setOngoing(true)
-                .build()
-        startForeground(
-            NOTIFICATION_ID,
-            notification,
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-        )
+        ensureForeground()
         return START_NOT_STICKY
+    }
+
+    private fun ensureForeground() {
+        runCatching {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(
+                NotificationChannel(CHANNEL, "Veil VM", NotificationManager.IMPORTANCE_LOW)
+            )
+            val notification =
+                Notification.Builder(this, CHANNEL)
+                    .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+                    .setContentTitle("Veil VM running")
+                    .setOngoing(true)
+                    .build()
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        }
+            .onFailure { Log.w(TAG, "could not enter the foreground: ${it.message}") }
     }
 
     override fun onDestroy() {

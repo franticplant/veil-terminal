@@ -23,7 +23,7 @@ class EngineProxy(private val context: Context) {
     private val relays = CopyOnWriteArrayList<Relay>()
 
     /** Returns [write-to-VM, read-from-VM]. */
-    fun start(protectedVm: Boolean): Array<ParcelFileDescriptor> {
+    fun start(protectedVm: Boolean, memoryMiB: Int): Array<ParcelFileDescriptor> {
         stop()
         val up = ParcelFileDescriptor.createPipe() // [read by proxy, write by app]
         val down = ParcelFileDescriptor.createPipe() // [read by app, write by proxy]
@@ -33,7 +33,7 @@ class EngineProxy(private val context: Context) {
         val proxyWrite = down[1]
         val h =
             try {
-                VmEngine.start(context, protectedVm)
+                VmEngine.start(context, protectedVm, memoryMiB)
             } catch (e: Exception) {
                 listOf(appWrite, proxyRead, appRead, proxyWrite).forEach {
                     runCatching { it.close() }
