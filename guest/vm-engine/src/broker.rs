@@ -149,7 +149,6 @@ fn read_line(file: &mut File) -> io::Result<String> {
 /// per direction, remove that dependency and mirror the blocking reader and
 /// writer the engine protocol already uses on vsock port 5000.
 struct BrokeredStream {
-    fd: i32,
     incoming: mpsc::Receiver<io::Result<Vec<u8>>>,
     buffered: Vec<u8>,
     offset: usize,
@@ -158,7 +157,6 @@ struct BrokeredStream {
 
 impl BrokeredStream {
     fn new(file: File) -> io::Result<Self> {
-        let fd = file.as_raw_fd();
         let mut read_file = file.try_clone()?;
         let mut write_file = file;
         let (in_tx, in_rx) = mpsc::channel(64);
@@ -201,7 +199,6 @@ impl BrokeredStream {
             })?;
 
         Ok(BrokeredStream {
-            fd,
             incoming: in_rx,
             buffered: Vec::new(),
             offset: 0,
@@ -221,17 +218,6 @@ impl BrokeredStream {
             self.offset = 0;
         }
         true
-    }
-}
-
-impl Drop for BrokeredStream {
-    fn drop(&mut self) {
-        // The reader thread can be blocked in read(2). Closing only the Rust
-        // File handles would leave the read side open, which keeps the host's
-        // broker relay and its descriptors alive after the SSH session ends.
-        unsafe {
-            libc::shutdown(self.fd, libc::SHUT_RDWR);
-        }
     }
 }
 

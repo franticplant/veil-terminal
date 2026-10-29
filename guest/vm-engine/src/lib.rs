@@ -33,6 +33,9 @@ unsafe fn notify_ready() {
 #[unsafe(no_mangle)]
 pub extern "C" fn AVmPayload_main() -> i32 {
     unsafe {
+        // The broker relay may close while a session task is still flushing.
+        // A broken write must not terminate the whole engine process.
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
         let listener = match broker::listen(ENGINE_PORT) {
             Ok(l) => l,
             Err(e) => {
