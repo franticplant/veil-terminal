@@ -114,6 +114,8 @@ class EngineProxy(private val context: Context) {
             Thread {
                     try {
                         tcpIn.copyTo(toGuest)
+                    } catch (e: Throwable) {
+                        VmEngine.note("broker upload #$connectionId ended: $e")
                     } finally {
                         // Either direction ending means the SSH connection is
                         // finished. Close the other direction too: waiting for
@@ -127,6 +129,8 @@ class EngineProxy(private val context: Context) {
             Thread {
                     try {
                         fromGuest.copyTo(tcpOut)
+                    } catch (e: Throwable) {
+                        VmEngine.note("broker download #$connectionId ended: $e")
                     } finally {
                         relay.close()
                     }

@@ -679,8 +679,7 @@ internal constructor(
         if (phase == SessionPhase.SESSION_PHASE_CLOSED) {
             outbox.close()
             _prompt.value = null
-            // Relay close is disabled until the host/guest stream teardown is
-            // fixed: closing the relay currently tears down the engine stream.
+            registry.releaseConnection(connectionId)
         }
     }
 
