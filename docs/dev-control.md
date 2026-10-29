@@ -165,6 +165,8 @@ never leaves Keystore.
   gVisor ignores setuid bits), so log in as root instead. Under crun
   (`VEIL_TESTHOST_RUNTIME=crun`), `sudo` works for tester with the same
   password, at the price of gVisor's isolation.
+- **Terminal font.** The terminal bundles Hack Nerd Font Mono; Nerd Font
+  glyphs do not depend on a system font being installed on the phone.
 
 **Through Tailmesh, use the laptop's MagicDNS name**, for example
 `fedora.<tailnet>.ts.net`, not its `100.x` address. With several tailnets,

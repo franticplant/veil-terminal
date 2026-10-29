@@ -103,4 +103,5 @@ dependencies {
 // Third-party notices (assets/third_party_notices.txt): see android/notices.gradle.
 ext.noticesRustManifest = 'android/jni/Cargo.toml'
 ext.noticesRustBuildTask = ':engine-client:cargoNdk'
+ext.noticesExtraFiles = ['android/notices/hack-nerd-font.txt']
 apply from: rootProject.file('notices.gradle')

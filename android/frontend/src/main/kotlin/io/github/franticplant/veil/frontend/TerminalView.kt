@@ -70,9 +70,19 @@ class TerminalView(context: Context) : View(context) {
             invalidate()
         }
 
+    /**
+     * Bundled so terminal runs do not depend on the device having a patched font installed. Nerd
+     * Fonts' Mono build keeps every icon on the cell grid; fake bold/italic below preserves the
+     * existing terminal styling.
+     */
+    private val terminalTypeface: Typeface = runCatching {
+        resources.getFont(R.font.hack_nerd_font_mono_regular)
+    }
+        .getOrDefault(Typeface.MONOSPACE)
+
     private val paint =
         Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            typeface = Typeface.MONOSPACE
+            typeface = terminalTypeface
             isSubpixelText = true
         }
     private val bgPaint = Paint()

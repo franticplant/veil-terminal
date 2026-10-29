@@ -20,6 +20,7 @@ abstract class NoticesTask extends DefaultTask {
     @Input abstract MapProperty<String, String> getLicenseByGroup()
     @InputDirectory @PathSensitive(PathSensitivity.RELATIVE) abstract DirectoryProperty getLicenseTexts()
     @InputFiles @PathSensitive(PathSensitivity.RELATIVE) abstract ConfigurableFileCollection getRustInputs()
+    @InputFiles @PathSensitive(PathSensitivity.RELATIVE) abstract ConfigurableFileCollection getExtraNotices()
     @Internal abstract DirectoryProperty getRepoRoot()
     @Input abstract Property<String> getRustManifest()
     @OutputDirectory abstract DirectoryProperty getOutputDir()
@@ -78,6 +79,15 @@ abstract class NoticesTask extends DefaultTask {
             }
             w.write('\nRUST CRATES (NATIVE CODE)\n')
             w.write(rust.getText('UTF-8'))
+            def extras = extraNotices.files.findAll { it.isFile() }.sort { it.name }
+            if (!extras.isEmpty()) {
+                w.write('\nFONTS AND OTHER BUNDLED ASSETS\n')
+                extras.each { f ->
+                    w.write(rule + '\n')
+                    w.write(f.getText('UTF-8'))
+                    w.write('\n')
+                }
+            }
         }
     }
 }
@@ -96,6 +106,8 @@ androidComponents {
             repoRoot.set(repo)
             rustManifest.set(noticesManifest)
             rustInputs.from(repo.file('Cargo.lock'), repo.file('about.toml'), repo.file('about.hbs'))
+            def extras = (project.findProperty('noticesExtraFiles') ?: [])
+            extras.each { extraNotices.from(repo.file(it)) }
             // cargo about runs offline: the crate sources come from the native build.
             dependsOn(noticesBuildTask)
         }

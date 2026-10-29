@@ -53,7 +53,8 @@ will own networking and `.vault` will own key use; neither is part of this relea
   explicitly allowed hosts.
 - Host keys are pinned by the app for both native and VM sessions; a changed key is refused.
 - A real terminal: true color, mouse, bracketed paste, scrollback, pinch-to-resize, fullscreen,
-  notch coverage, themes, and copy-only OSC 52.
+  notch coverage, themes, and copy-only OSC 52. The bundled **Hack Nerd Font Mono** gives
+  shell prompts, tmux, and editor icons the glyphs they expect without requiring a device font.
 - Sessions continue in the background; the VM host is a foreground service.
 - VM host metrics, VM console logs and guest uptime are exposed through devd and `veil-ctl`.
 - Native engine choice remains available for comparison and recovery; VM failure is reported, not
