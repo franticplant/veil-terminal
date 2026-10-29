@@ -6,28 +6,94 @@
 
 #![allow(unsafe_code)]
 
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::future::Future;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::pin::Pin;
 use std::ptr::null_mut;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use veil_engine::{Dialed, Dialer};
 
-/// A blocking vsock listener handed to the guest engine.
+type Endpoint = (String, u16);
+
+#[derive(Default)]
+struct BrokerState {
+    /// Accepts that arrived before the guest engine asked for them.
+    ready: HashMap<Endpoint, VecDeque<File>>,
+    /// Engine dials waiting for the host connection with this endpoint.
+    waiting: HashMap<Endpoint, VecDeque<oneshot::Sender<File>>>,
+}
+
+/// A blocking vsock listener plus one dispatcher. The host writes the endpoint
+/// header before the guest engine necessarily starts its dial, and several
+/// sessions may open at once, so a single accept loop routes connections by
+/// endpoint instead of letting independent dial tasks race on accept(2).
 pub struct BrokeredDialer {
-    listener: Arc<File>,
+    state: Arc<Mutex<BrokerState>>,
 }
 
 impl BrokeredDialer {
     pub fn new(listener: File) -> Self {
-        BrokeredDialer {
-            listener: Arc::new(listener),
+        let state = Arc::new(Mutex::new(BrokerState::default()));
+        let listener = Arc::new(listener);
+        let thread_state = state.clone();
+        std::thread::Builder::new()
+            .name("veil-broker-accept".into())
+            .spawn(move || accept_loop(listener, thread_state))
+            .expect("spawn broker accept thread");
+        BrokeredDialer { state }
+    }
+}
+
+fn accept_loop(listener: Arc<File>, state: Arc<Mutex<BrokerState>>) {
+    loop {
+        let fd = unsafe { libc::accept(listener.as_raw_fd(), null_mut(), null_mut()) };
+        if fd < 0 {
+            eprintln!(
+                "veil-vm-engine: broker accept failed: {}",
+                io::Error::last_os_error()
+            );
+            continue;
+        }
+        let mut file = unsafe { File::from_raw_fd(fd) };
+        let host = match read_line(&mut file) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("veil-vm-engine: broker header failed: {e}");
+                continue;
+            }
+        };
+        let port = match read_line(&mut file)
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+        {
+            Some(v) => v,
+            None => {
+                eprintln!("veil-vm-engine: broker port failed");
+                continue;
+            }
+        };
+        eprintln!("veil-vm-engine: broker accepted {host}:{port}");
+        let key = (host, port);
+        let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(queue) = st.waiting.get_mut(&key)
+            && let Some(tx) = queue.pop_front()
+        {
+            if tx.send(file).is_err() {
+                eprintln!("veil-vm-engine: broker dialer vanished");
+            }
+        } else {
+            let ready = st.ready.entry(key).or_default();
+            ready.push_back(file);
+            if ready.len() > 16 {
+                ready.pop_front();
+            }
         }
     }
 }
@@ -38,30 +104,30 @@ impl Dialer for BrokeredDialer {
         host: &'a str,
         port: u16,
     ) -> Pin<Box<dyn Future<Output = io::Result<Dialed>> + Send + 'a>> {
-        let listener = self.listener.clone();
-        let want_host = host.to_string();
+        let state = self.state.clone();
+        let key = (host.to_string(), port);
         Box::pin(async move {
             eprintln!("veil-vm-engine: broker waiting for {host}:{port}");
-            let file = tokio::task::spawn_blocking(move || {
-                let fd = unsafe { libc::accept(listener.as_raw_fd(), null_mut(), null_mut()) };
-                if fd < 0 {
-                    return Err(io::Error::last_os_error());
+            let (tx, rx) = oneshot::channel();
+            let ready_file = {
+                let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(queue) = st.ready.get_mut(&key) {
+                    queue.pop_front()
+                } else {
+                    None
                 }
-                let mut file = unsafe { File::from_raw_fd(fd) };
-                eprintln!("veil-vm-engine: broker accepted");
-                let got_host = read_line(&mut file)?;
-                let got_port = read_line(&mut file)?;
-                eprintln!("veil-vm-engine: broker header {got_host}:{got_port}");
-                if got_host != want_host || got_port.parse::<u16>().ok() != Some(port) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "broker opened the wrong endpoint",
-                    ));
-                }
-                Ok(file)
-            })
-            .await
-            .map_err(io::Error::other)??;
+                .or_else(|| {
+                    st.waiting.entry(key.clone()).or_default().push_back(tx);
+                    None
+                })
+            };
+            let file = match ready_file {
+                Some(file) => file,
+                None => rx.await.map_err(|_| {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "broker dispatcher stopped")
+                })?,
+            };
+            eprintln!("veil-vm-engine: broker accepted {host}:{port}");
             Ok(Dialed {
                 stream: Box::new(BrokeredStream::new(file)?),
                 peer: None,

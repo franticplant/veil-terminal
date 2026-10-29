@@ -80,6 +80,8 @@ class SessionRegistry(
     private val policy: () -> SessionPolicy = { SessionPolicy() },
 ) {
     private val connectLock = Mutex()
+    /** Serialize preparation + OpenSession so broker handoffs cannot interleave. */
+    private val openLock = Mutex()
     @Volatile private var conn: EngineConnection? = null
     private val byId = ConcurrentHashMap<Long, Session>()
     private val _sessions = MutableStateFlow<List<Session>>(emptyList())
@@ -320,7 +322,10 @@ class SessionRegistry(
         }
     }
 
-    private suspend fun openOnce(target: Target, cols: Int, rows: Int): Session {
+    private suspend fun openOnce(target: Target, cols: Int, rows: Int): Session =
+        openLock.withLock { openOnceLocked(target, cols, rows) }
+
+    private suspend fun openOnceLocked(target: Target, cols: Int, rows: Int): Session {
         val c = connection()
         val connectionId = backend.prepare(target.host, target.port)
         val reply =
@@ -343,7 +348,13 @@ class SessionRegistry(
                 releaseConnection(connectionId)
                 throw e
             }
-        val id = reply.expect(EngineMsg.BodyCase.SESSION_OPENED).sessionOpened.sessionId
+        val id =
+            try {
+                reply.expect(EngineMsg.BodyCase.SESSION_OPENED).sessionOpened.sessionId
+            } catch (e: Exception) {
+                releaseConnection(connectionId)
+                throw e
+            }
         log.info("session", "opened ${target.displayName} (${cols}x$rows)", id)
         val session = Session(id, target, c, this, connectionId)
         if (target.startup.isNotBlank()) {
