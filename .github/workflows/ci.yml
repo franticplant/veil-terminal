@@ -76,6 +76,11 @@ jobs:
           name: unsigned-devd
           path: android/devd/build/outputs/apk/release/*.apk
           retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-vm
+          path: android/vm/build/outputs/apk/release/*.apk
+          retention-days: 7
 
   # Signed dev APKs for pushes to main. Only this job can use the "release"
   # environment, which holds the signing key and only accepts main and v* tags.
@@ -100,6 +105,10 @@ jobs:
         with:
           name: unsigned-devd
           path: android/devd/build/outputs/apk/release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unsigned-vm
+          path: android/vm/build/outputs/apk/release
       - name: Sign
         env:
           VEIL_KEYSTORE_BASE64: ${{ secrets.VEIL_KEYSTORE_BASE64 }}
@@ -114,6 +123,7 @@ jobs:
           printf '%s' "$VEIL_KEYSTORE_BASE64" | base64 -d > "$VEIL_KEYSTORE"
           scripts/sign dev
           scripts/sign devd
+          scripts/sign vm
           rm -f "$VEIL_KEYSTORE"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

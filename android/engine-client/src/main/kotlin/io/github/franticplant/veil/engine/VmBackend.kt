@@ -28,6 +28,7 @@ class VmBackend(
     private val dataDir: File,
     private val protectedVm: Boolean = true,
     private val memoryMiB: Int = 128,
+    private val diagnostics: Boolean = false,
     private val log: LogRing? = null,
 ) : EngineBackend {
     override val kind = "vm"
@@ -150,7 +151,7 @@ class VmBackend(
             }
             failure?.let { throw IllegalStateException(it) }
             val host = remote ?: throw IllegalStateException("no VM host binder")
-            val pfds = host.startEngine(protectedVm, memoryMiB)
+            val pfds = host.startEngine(protectedVm, memoryMiB, diagnostics)
             active = host
             keep = true
             return Handle(context, connection, host, pfds) {

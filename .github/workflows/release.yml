@@ -125,6 +125,7 @@ jobs:
           scripts/sign prod
           scripts/sign dev
           scripts/sign devd
+          scripts/sign vm
       - name: Remove keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/veil-release.p12"
@@ -264,6 +265,7 @@ jobs:
             echo "| \`veil-$v.apk\` | **Veil.** Install this one. |"
             echo "| \`veil-$v-dev.apk\` | Veil with the development control plane (DevHooks), for development with devd. Same app and key: installs over Veil, and back. |"
             echo "| \`veil-devd-$v.apk\` | devd, the development agent: remote control of Veil over tether or tailnet, with pairing. For development only. |"
+            echo "| \`veil-vm-$v.apk\` | Veil VM host: the optional Microdroid engine host. It does not require network access and holds the AVF permissions. |"
             echo "| \`veil-ctl-$TAG-linux-x86_64\` | veil-ctl, the laptop CLI for devd. Static; any x86_64 Linux. |"
             echo "| \`*-third-party-notices.txt\` | Third-party licenses of each of the above (also inside each APK). |"
             echo "| \`*.idsig\` | APK signature scheme v4 files, for incremental install. |"

@@ -40,7 +40,12 @@ object VmEngine {
         val managerClass: Class<*>,
     )
 
-    fun start(context: Context, protected: Boolean, memoryMiB: Int): Handle =
+    fun start(
+        context: Context,
+        protected: Boolean,
+        memoryMiB: Int,
+        diagnostics: Boolean,
+    ): Handle =
         synchronized(lock) {
             val managerClass = Class.forName("android.system.virtualmachine.VirtualMachineManager")
             val manager =
@@ -64,8 +69,8 @@ object VmEngine {
             )
             optionalInt(builderClass, builder, "setCpuTopology", 0)
             optional(builderClass, builder, "setShouldUseHugepages", true)
-            optionalInt(builderClass, builder, "setDebugLevel", 1)
-            optional(builderClass, builder, "setVmOutputCaptured", true)
+            optionalInt(builderClass, builder, "setDebugLevel", if (diagnostics) 1 else 0)
+            optional(builderClass, builder, "setVmOutputCaptured", diagnostics)
             val configClass = Class.forName("android.system.virtualmachine.VirtualMachineConfig")
             val config =
                 builderClass.getMethod("build").invoke(builder)

@@ -96,3 +96,8 @@ tasks.named('preBuild') { dependsOn cargoNdk }
 dependencies {
     implementation project(':vmapi')
 }
+
+// Third-party notices for the VM host and its native payload.
+ext.noticesRustManifest = 'guest/vm-engine/Cargo.toml'
+ext.noticesRustBuildTask = ':vm:cargoNdk'
+apply from: rootProject.file('notices.gradle')

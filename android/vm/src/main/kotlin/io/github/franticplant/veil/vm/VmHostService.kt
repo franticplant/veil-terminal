@@ -29,6 +29,7 @@ class VmHostService : Service() {
             override fun startEngine(
                 protectedVm: Boolean,
                 memoryMiB: Int,
+                diagnostics: Boolean,
             ): Array<ParcelFileDescriptor> =
                 synchronized(this@VmHostService) {
                     engine?.let {
@@ -36,7 +37,12 @@ class VmHostService : Service() {
                         engine = null
                     }
                     val proxy = EngineProxy(this@VmHostService)
-                    val pfds = proxy.start(protectedVm, memoryMiB.coerceIn(32, 1024))
+                    val pfds =
+                        proxy.start(
+                            protectedVm,
+                            memoryMiB.coerceIn(32, 1024),
+                            diagnostics,
+                        )
                     engine = proxy
                     pfds
                 }
