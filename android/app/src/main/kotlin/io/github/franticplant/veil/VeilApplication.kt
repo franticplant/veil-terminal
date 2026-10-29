@@ -44,7 +44,9 @@ class VeilApplication : Application(), EngineHost {
      */
     private val engineDir by lazy { File(filesDir, "engine") }
 
-    private val backend: EngineBackend by lazy {
+    @Volatile private var switchedBackend: EngineBackend? = null
+
+    private val initialBackend: EngineBackend by lazy {
         when (uiPrefs.values.value.engine) {
             UiPrefs.EnginePlace.NATIVE ->
                 HostBackend(this, BuildConfig.VERSION_NAME, engineDir)
@@ -60,6 +62,9 @@ class VeilApplication : Application(), EngineHost {
                 )
         }
     }
+
+    private val backend: EngineBackend
+        get() = switchedBackend ?: initialBackend
 
     override val backendKind: String
         get() = backend.kind
@@ -80,7 +85,9 @@ class VeilApplication : Application(), EngineHost {
         KnownHostsStore(File(engineDir, "known_hosts.frontend"), log)
     }
 
-    override val sessions: SessionRegistry by lazy {
+    @Volatile private var switchedSessions: SessionRegistry? = null
+
+    private fun newRegistry(backend: EngineBackend): SessionRegistry =
         SessionRegistry(backend, appScope, log, sshKeys, knownHosts) {
             uiPrefs.values.value.let {
                 io.github.franticplant.veil.engine.SessionPolicy(
@@ -89,6 +96,29 @@ class VeilApplication : Application(), EngineHost {
                 )
             }
         }
+
+    private val initialSessions: SessionRegistry by lazy { newRegistry(initialBackend) }
+
+    override val sessions: SessionRegistry
+        get() = switchedSessions ?: initialSessions
+
+    /**
+     * A deliberate recovery path from a failed VM start. It only switches when no live session
+     * would be lost, persists native as the engine choice, and retires the old engine connection.
+     */
+    @Synchronized
+    override fun useNativeEngine(): Boolean {
+        if (backend.kind == "native") return true
+        val old = sessions
+        if (old.sessions.value.any { !it.status.value.closed }) return false
+        val native = HostBackend(this, BuildConfig.VERSION_NAME, engineDir)
+        val replacement = newRegistry(native)
+        switchedBackend = native
+        switchedSessions = replacement
+        uiPrefs.update { it.copy(engine = UiPrefs.EnginePlace.NATIVE) }
+        appScope.launch { old.restartEngine("switched to native after a VM failure") }
+        appScope.launch { SessionService.follow(this@VeilApplication, replacement) }
+        return true
     }
 
     override val profiles: Profiles by lazy { Profiles(this) }

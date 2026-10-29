@@ -179,6 +179,7 @@ private fun VeilApp(host: EngineHost, profiles: Profiles, pip: Boolean) {
     var showHosts by remember { mutableStateOf(true) }
     var showSessions by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var failedTarget by remember { mutableStateOf<Target?>(null) }
     var lastGrid by remember { mutableStateOf(DEFAULT_COLS to DEFAULT_ROWS) }
     val scope = rememberCoroutineScope()
     val current = sessions.firstOrNull { it.id == currentId }
@@ -216,7 +217,9 @@ private fun VeilApp(host: EngineHost, profiles: Profiles, pip: Boolean) {
                 val s = host.sessions.open(saved, lastGrid.first, lastGrid.second)
                 currentId = s.id
                 showHosts = false
+                failedTarget = null
             } catch (e: Exception) {
+                failedTarget = target
                 error = "Cannot start a session: ${e.message}"
             }
         }
@@ -307,11 +310,54 @@ private fun VeilApp(host: EngineHost, profiles: Profiles, pip: Boolean) {
         )
     }
 
-    error?.let {
+    error?.let { message ->
         AlertDialog(
-            onDismissRequest = { error = null },
-            confirmButton = { TextButton(onClick = { error = null }) { Text("OK") } },
-            text = { Text(it) },
+            onDismissRequest = {
+                error = null
+                failedTarget = null
+            },
+            confirmButton = {
+                Column(horizontalAlignment = Alignment.End) {
+                    val target = failedTarget
+                    if (target != null) {
+                        TextButton(
+                            onClick = {
+                                error = null
+                                failedTarget = null
+                                connect(target)
+                            }
+                        ) {
+                            Text("Retry")
+                        }
+                    }
+                    if (target != null && host.backendKind == "vm") {
+                        TextButton(
+                            onClick = {
+                                if (host.useNativeEngine()) {
+                                    error = null
+                                    failedTarget = null
+                                    connect(target)
+                                } else {
+                                    error = "Close live sessions before switching to native."
+                                }
+                            }
+                        ) {
+                            Text("Use native")
+                        }
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        error = null
+                        failedTarget = null
+                    }
+                ) {
+                    Text("Close")
+                }
+            },
+            text = { Text(message) },
         )
     }
 }

@@ -39,7 +39,7 @@ import org.json.JSONObject
 
 /** The methods Veil's dev flavor implements. The dev agent adds its own and forwards these. */
 class AppMethods(private val app: VeilApplication) {
-    private val registry = app.sessions
+    private val registry get() = app.sessions
     private val scenarios = Scenarios(app)
     val table = MethodTable()
 
@@ -1029,6 +1029,21 @@ class AppMethods(private val app: VeilApplication) {
             val t0 = SystemClock.elapsedRealtimeNanos()
             engine { registry.connection().ping(t0) }
             JSONObject().put("engineVersion", registry.currentConnection?.hello?.engineVersion)
+        }
+
+        table.add(
+            method(
+                "engine.useNative",
+                Scope.LIFECYCLE,
+                "Explicitly switches this process to the native engine. Refuses if a live session " +
+                    "would be lost; persists native for the next process start.",
+                true,
+            )
+        ) {
+            if (!app.useNativeEngine()) {
+                throw ApiException(ErrorCode.FAILED, "close live sessions before switching")
+            }
+            JSONObject().put("engine", app.backendKind)
         }
 
         table.add(

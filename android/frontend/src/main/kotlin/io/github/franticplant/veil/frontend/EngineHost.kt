@@ -21,6 +21,12 @@ interface EngineHost {
     val buildInfo: BuildInfo
     /** Where sessions run, for display ("local", later "vm"). */
     val backendKind: String
+
+    /**
+     * Explicitly switches this process to the native engine after a VM failure. Returns false when
+     * a live session would be lost or the switch is not possible.
+     */
+    fun useNativeEngine(): Boolean
 }
 
 /** Shown to the user; [devTools] builds carry the development control plane. */
