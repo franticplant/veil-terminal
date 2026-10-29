@@ -1,0 +1,21 @@
+plugins {
+    alias(libs.plugins.android.library)
+}
+
+android {
+    namespace = 'io.github.franticplant.veil.vm.api'
+    compileSdk = 37
+
+    defaultConfig {
+        minSdk = 34
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        aidl = true
+    }
+}

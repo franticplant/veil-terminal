@@ -307,6 +307,15 @@ object DevIds {
     /** The dev agent. */
     const val DEVD_PACKAGE = "io.github.franticplant.veil.devd"
 
+    /** The AVF host: owns MANAGE_VIRTUAL_MACHINE and the vsock side of the VM. */
+    const val VM_PACKAGE = "io.github.franticplant.veil.vm"
+
+    /** Signature-level: only devd (same key) may control the VM host. */
+    const val VM_HOST_PERMISSION = "io.github.franticplant.veil.permission.VM_HOST"
+
+    /** The VM host's Binder service. */
+    const val VM_HOST_SERVICE = "io.github.franticplant.veil.vm.VmHostService"
+
     /** Signature-level: only packages signed with the Veil key hold it. */
     const val DEV_HOOKS_PERMISSION = "io.github.franticplant.veil.permission.DEV_HOOKS"
 
@@ -314,5 +323,5 @@ object DevIds {
     const val DEV_HOOKS_SERVICE = "io.github.franticplant.veil.dev.DevHooksService"
 
     /** Every package devd may install or update. */
-    val VEIL_PACKAGES = setOf(VEIL_PACKAGE, DEVD_PACKAGE)
+    val VEIL_PACKAGES = setOf(VEIL_PACKAGE, DEVD_PACKAGE, VM_PACKAGE)
 }

@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      The AVF host package. These are restricted system permissions granted
+      once from adb for this package and Android user. The main Veil app binds
+      this package's narrow service instead of holding them itself.
+    -->
+    <uses-permission
+        android:name="android.permission.MANAGE_VIRTUAL_MACHINE"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission
+        android:name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Signature-level: only devd (same Veil key) may call the probe service. -->
+    <permission
+        android:name="io.github.franticplant.veil.permission.VM_HOST"
+        android:label="Control the Veil VM host"
+        android:protectionLevel="signature" />
+
+    <application
+        android:name=".VmApplication"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:label="@string/app_name"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+        <!-- Optional: a device without AVF still installs the package. -->
+        <uses-library
+            android:name="android.system.virtualmachine"
+            android:required="false" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".VmHostService"
+            android:exported="true"
+            android:permission="io.github.franticplant.veil.permission.VM_HOST"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Runs the Veil engine in a Microdroid VM" />
+        </service>
+    </application>
+</manifest>

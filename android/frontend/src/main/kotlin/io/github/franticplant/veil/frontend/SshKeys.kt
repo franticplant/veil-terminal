@@ -37,6 +37,16 @@ class SshKeys(private val log: LogRing) : LoginSigner {
         UNKNOWN,
     }
 
+    /** Where a new key should be generated. */
+    enum class Where {
+        /** StrongBox when the device has it, otherwise the TEE. */
+        AUTO,
+        /** Require the secure element; fail if this device has none. */
+        STRONGBOX,
+        /** The TEE (or software-backed Keystore) only. */
+        TEE,
+    }
+
     data class Key(
         val name: String,
         val publicKey: String,
@@ -50,10 +60,14 @@ class SshKeys(private val log: LogRing) : LoginSigner {
     val keys: StateFlow<List<Key>> = _keys
 
     /**
-     * Creates a key; StrongBox if [strongBox] and the device has one. With [whileUnlocked],
-     * Keystore itself refuses to use the key while the phone is locked.
+     * Creates a key in [where]. With [whileUnlocked], Keystore itself refuses to use the key while
+     * the phone is locked.
      */
-    fun create(name: String, strongBox: Boolean = true, whileUnlocked: Boolean = true): Key {
+    fun create(
+        name: String,
+        where: Where = Where.AUTO,
+        whileUnlocked: Boolean = true,
+    ): Key {
         require(NAME.matches(name)) { "a key name is 1-40 letters, digits, '.', '_' or '-'" }
         require(!ks.containsAlias(alias(name))) { "a key named '$name' exists" }
         fun generate(sb: Boolean) {
@@ -70,11 +84,26 @@ class SshKeys(private val log: LogRing) : LoginSigner {
                 }
                 .generateKeyPair()
         }
-        try {
-            generate(strongBox)
-        } catch (e: StrongBoxUnavailableException) {
-            log.info("keys", "no StrongBox on this device; '$name' lives in the TEE")
-            generate(false)
+        when (where) {
+            Where.AUTO -> {
+                try {
+                    generate(true)
+                } catch (e: StrongBoxUnavailableException) {
+                    log.info("keys", "no StrongBox on this device; '$name' lives in the TEE")
+                    generate(false)
+                }
+            }
+            Where.STRONGBOX ->
+                try {
+                    generate(true)
+                } catch (e: StrongBoxUnavailableException) {
+                    log.warn("keys", "StrongBox was requested but is unavailable: ${e.message}")
+                    throw IllegalArgumentException(
+                        "StrongBox is not available on this device",
+                        e,
+                    )
+                }
+            Where.TEE -> generate(false)
         }
         refresh()
         val k = _keys.value.first { it.name == name }

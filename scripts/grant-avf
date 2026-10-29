@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Grants the AVF system permissions to a Veil package for one Android user.
+#
+#   scripts/grant-avf [PACKAGE] [USER]
+#
+# Defaults to the separate VM host package in user 10. Both permissions must be
+# declared in that APK's manifest first; they have no runtime permission dialog.
+# The grant survives package updates; uninstalling the package loses it.
+set -euo pipefail
+
+package=${1:-io.github.franticplant.veil.vm}
+user=${2:-10}
+permissions=(
+	android.permission.MANAGE_VIRTUAL_MACHINE
+	android.permission.USE_CUSTOM_VIRTUAL_MACHINE
+)
+
+if ! adb get-state >/dev/null 2>&1; then
+	echo "no adb device; enable wireless debugging or connect USB" >&2
+	exit 1
+fi
+
+if ! adb shell pm list packages --user "$user" "$package" | grep -qx "package:$package"; then
+	echo "$package is not installed for user $user; install it first" >&2
+	exit 1
+fi
+
+for permission in "${permissions[@]}"; do
+	echo "granting $permission to $package (user $user)"
+	adb shell pm grant --user "$user" "$package" "$permission"
+done

@@ -29,15 +29,19 @@ class Profiles(context: Context) {
     fun delete(t: Target) = store(_all.value - t)
 
     /**
-     * Records a connection to [t]: saves it if no profile has the same user, host and port, and
-     * moves it to the top. Returns the saved profile (an existing one keeps its name and key).
+     * Records a connection to [t] for sorting and returns the saved profile if one matches, else
+     * [t] itself. New targets are not saved automatically: they go to [History] and become a host
+     * only when the user says so.
      */
     fun touch(t: Target): Target {
         val existing = _all.value.firstOrNull { key(it) == key(t) }
         used.edit().putLong(key(t), System.currentTimeMillis()).apply()
-        if (existing == null) store(_all.value + t) else _all.value = sorted(_all.value)
+        if (existing != null) _all.value = sorted(_all.value)
         return existing ?: t
     }
+
+    /** True when the same user, host and port are already saved. */
+    fun contains(t: Target): Boolean = _all.value.any { key(it) == key(t) }
 
     /** Last connection time, 0 if never. */
     fun lastUsed(t: Target): Long = used.getLong(key(t), 0)

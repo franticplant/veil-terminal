@@ -8,6 +8,8 @@ members = [
     "core/engine",
     "core/wire",
     "guest/engine-host",
+    "guest/vm-probe",
+    "guest/vm-engine",
     "android/jni",
     "android/devd-native",
     "dev/ctl",
@@ -36,6 +38,7 @@ protox = "0.10.0"
 tokio = { version = "1.54.1", default-features = false }
 thiserror = "2.0.21"
 jni = "0.22.4"
+libc = "0.2"
 # The terminal state machine only; its default "serde" feature is not needed.
 alacritty_terminal = { version = "0.26.0", default-features = false }
 # ring, not the default aws-lc-rs: ring cross-compiles with the NDK alone.

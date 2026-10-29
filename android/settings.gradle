@@ -27,3 +27,8 @@ include ':app'
 // definitions and the dev agent package (io.github.franticplant.veil.devd).
 include ':devapi'
 include ':devd'
+// Shared AIDL between the VM host package and devd: the narrow control surface.
+include ':vmapi'
+// The AVF host package: MANAGE_VIRTUAL_MACHINE, VM lifecycle and vsock.
+// Headless; the main app binds it when VM mode is available.
+include ':vm'

@@ -91,6 +91,7 @@ tasks.named('preBuild') { dependsOn cargoNdk }
 dependencies {
     api libs.protobuf.javalite
     api libs.kotlinx.coroutines.android
+    implementation project(':vmapi')
 
     testImplementation libs.junit
     testImplementation libs.kotlinx.coroutines.test

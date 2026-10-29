@@ -12,9 +12,20 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Signature-level: the main app may bind the VM host's narrow service. -->
+    <uses-permission android:name="io.github.franticplant.veil.permission.VM_HOST" />
+
+    <queries>
+        <package android:name="io.github.franticplant.veil.vm" />
+    </queries>
+
     <!--
       allowBackup off: host keys, profiles and later credential handles must not
       leave the device through Android backup.
+
+      AVF permissions belong to the separate <base>.vm package (MANAGE_VIRTUAL_MACHINE,
+      USE_CUSTOM_VIRTUAL_MACHINE), not here. This package only binds its narrow
+      service; keeping VM administration out of the UI/network UID is the point.
     -->
     <application
         android:name=".VeilApplication"

@@ -163,12 +163,12 @@ async fn run_inner(
     mut cmds: mpsc::Receiver<Command>,
 ) -> Result<String, String> {
     prompter.state(v1::SessionPhase::Connecting, "").await;
-    let stream = env
+    let dialed = env
         .dialer
         .dial(&spec.host, spec.port)
         .await
         .map_err(|e| format!("cannot connect to {}:{}: {e}", spec.host, spec.port))?;
-    if let Ok(peer) = stream.peer_addr() {
+    if let Some(peer) = dialed.peer {
         prompter.stats.set_peer(peer.to_string());
         prompter.log(
             v1::LogLevel::Info,
@@ -177,7 +177,7 @@ async fn run_inner(
         );
     }
     let stream = crate::counted::Counted::new(
-        stream,
+        dialed.stream,
         prompter.stats.wire_from_remote.clone(),
         prompter.stats.wire_to_remote.clone(),
     );

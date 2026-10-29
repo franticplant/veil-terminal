@@ -27,6 +27,7 @@ import io.github.franticplant.veil.engine.proto.HostKeyDecision
 import io.github.franticplant.veil.engine.proto.LogLevel
 import io.github.franticplant.veil.engine.proto.SessionPhase
 import io.github.franticplant.veil.frontend.KeyEncoder
+import io.github.franticplant.veil.frontend.SshKeys
 import java.io.File
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.combine
@@ -784,10 +785,15 @@ class AppMethods(private val app: VeilApplication) {
             method(
                 "keys.create",
                 Scope.OPERATE,
-                "Creates an ECDSA P-256 key in Android Keystore (StrongBox when the phone has it).",
+                "Creates an ECDSA P-256 key in Android Keystore.",
                 true,
                 str("name", "1-40 letters, digits, '.', '_' or '-'.", required = true),
-                bool("strongBox", "Ask for StrongBox (default true; falls back to the TEE)."),
+                str(
+                    "where",
+                    "auto: StrongBox if available; strongbox: require it; tee: TEE only.",
+                    choices = listOf("auto", "strongbox", "tee"),
+                ),
+                bool("strongBox", "Legacy alias: false means tee."),
                 bool(
                     "whileUnlocked",
                     "Keystore refuses to use it while the phone is locked (default true).",
@@ -795,15 +801,26 @@ class AppMethods(private val app: VeilApplication) {
             )
         ) { p ->
             try {
+                val where =
+                    when (p.stringOr("where", "").lowercase()) {
+                        "strongbox" -> SshKeys.Where.STRONGBOX
+                        "tee" -> SshKeys.Where.TEE
+                        "auto" -> SshKeys.Where.AUTO
+                        else ->
+                            if (p.boolOr("strongBox", true)) SshKeys.Where.AUTO
+                            else SshKeys.Where.TEE
+                    }
                 json(
                     app.sshKeys.create(
                         p.string("name"),
-                        p.boolOr("strongBox", true),
+                        where,
                         p.boolOr("whileUnlocked", true),
                     )
                 )
             } catch (e: IllegalArgumentException) {
                 throw ApiException(ErrorCode.INVALID_PARAMS, e.message ?: "invalid")
+            } catch (e: Exception) {
+                throw ApiException(ErrorCode.FAILED, e.message ?: "key generation failed")
             }
         }
         table.add(
@@ -901,6 +918,8 @@ class AppMethods(private val app: VeilApplication) {
             JSONObject()
                 .put("theme", v.theme)
                 .put("extraKeys", v.extraKeys)
+                .put("tabsOnTop", v.tabsOnTop)
+                .put("keysRows", v.keysRows)
                 .put("fullscreen", v.fullscreen)
                 .put("coverCutout", v.coverCutout)
                 .put("fontSizeSp", v.fontSizeSp.toDouble())
@@ -928,6 +947,8 @@ class AppMethods(private val app: VeilApplication) {
                     choices = io.github.franticplant.veil.frontend.Palette.ALL.map { it.id },
                 ),
                 bool("extraKeys", "Show the keys bar."),
+                bool("tabsOnTop", "Keep a tab strip above the terminal."),
+                int("keysRows", "Rows in the keys bar (1 or 2).", min = 1, max = 2),
                 bool("fullscreen", "Fullscreen terminal."),
                 bool("coverCutout", "Fullscreen covers the notch."),
                 str(
@@ -943,8 +964,8 @@ class AppMethods(private val app: VeilApplication) {
                 str(
                     "engine",
                     "Where the engine runs (next start): a native process, a Java service " +
-                        "process, or inside the app.",
-                    choices = listOf("native", "service", "local"),
+                        "process, inside the app, or the Microdroid VM.",
+                    choices = listOf("native", "service", "local", "vm"),
                 ),
             )
         ) { p ->
@@ -952,6 +973,8 @@ class AppMethods(private val app: VeilApplication) {
                 v.copy(
                     theme = p.stringOr("theme", v.theme),
                     extraKeys = p.boolOr("extraKeys", v.extraKeys),
+                    tabsOnTop = p.boolOr("tabsOnTop", v.tabsOnTop),
+                    keysRows = p.intOr("keysRows", v.keysRows).coerceIn(1, 2),
                     fullscreen = p.boolOr("fullscreen", v.fullscreen),
                     coverCutout = p.boolOr("coverCutout", v.coverCutout),
                     clipboard =

@@ -18,6 +18,8 @@ class UiPrefs(context: Context) {
         SERVICE("Service"),
         /** Inside the app process, through JNI (LocalBackend). */
         LOCAL("In app"),
+        /** The fixed engine payload in a Microdroid VM (VmBackend). */
+        VM("VM (Microdroid)"),
     }
 
     enum class ClipboardPolicy {
@@ -28,6 +30,10 @@ class UiPrefs(context: Context) {
 
     data class Values(
         val extraKeys: Boolean = true,
+        /** Keep a tab strip above the terminal; off uses a compact session picker instead. */
+        val tabsOnTop: Boolean = true,
+        /** Rows in the extra-keys bar: 1 is compact, 2 shows symbols and function keys at once. */
+        val keysRows: Int = 2,
         val fullscreen: Boolean = false,
         val fontSizeSp: Float = 13f,
         val clipboard: ClipboardPolicy = ClipboardPolicy.ASK,
@@ -50,6 +56,8 @@ class UiPrefs(context: Context) {
         MutableStateFlow(
             Values(
                 extraKeys = prefs.getBoolean("extraKeys", true),
+                tabsOnTop = prefs.getBoolean("tabsOnTop", true),
+                keysRows = prefs.getInt("keysRows", 2),
                 fullscreen = prefs.getBoolean("fullscreen", false),
                 fontSizeSp = prefs.getFloat("fontSize", 13f),
                 clipboard =
@@ -74,6 +82,8 @@ class UiPrefs(context: Context) {
         val v = f(_values.value)
         prefs.edit {
             putBoolean("extraKeys", v.extraKeys)
+            putBoolean("tabsOnTop", v.tabsOnTop)
+            putInt("keysRows", v.keysRows)
             putBoolean("fullscreen", v.fullscreen)
             putFloat("fontSize", v.fontSizeSp)
             putString("clipboard", v.clipboard.name)

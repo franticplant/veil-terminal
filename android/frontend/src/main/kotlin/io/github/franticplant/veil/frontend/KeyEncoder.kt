@@ -80,15 +80,53 @@ object KeyEncoder {
         return s.toByteArray()
     }
 
-    /** Typed text. Ctrl applies to a single character; Alt prefixes ESC. */
+    /**
+     * Typed text. Shift applies to a single character, Ctrl to a single character; Alt prefixes
+     * ESC.
+     */
     fun text(text: String, mods: Mods = Mods()): ByteArray {
         var s = text.replace("\n", "\r")
+        if (mods.shift && s.codePointCount(0, s.length) == 1) {
+            s = shifted(s[0]).toString()
+        }
         if (mods.ctrl && s.codePointCount(0, s.length) == 1) {
             control(s[0])?.let { s = it.toString() }
         }
         if (mods.alt) s = ESC + s
         return s.toByteArray()
     }
+
+    /**
+     * The shifted form of a key on a US layout. Software keyboards send the unshifted character;
+     * when Shift is sticky we have to apply it ourselves. Letters and the common symbols only;
+     * other layouts that need a different mapping still work through the IME's own Shift key.
+     */
+    fun shifted(c: Char): Char =
+        when (c) {
+            in 'a'..'z' -> c.uppercaseChar()
+            '1' -> '!'
+            '2' -> '@'
+            '3' -> '#'
+            '4' -> '$'
+            '5' -> '%'
+            '6' -> '^'
+            '7' -> '&'
+            '8' -> '*'
+            '9' -> '('
+            '0' -> ')'
+            '-' -> '_'
+            '=' -> '+'
+            '[' -> '{'
+            ']' -> '}'
+            '\\' -> '|'
+            ';' -> ':'
+            '\'' -> '"'
+            ',' -> '<'
+            '.' -> '>'
+            '/' -> '?'
+            '`' -> '~'
+            else -> c
+        }
 
     /**
      * Pasted text. With bracketed paste on, it is wrapped in ESC[200~ … ESC[201~, and any end

@@ -1,0 +1,98 @@
+plugins {
+    alias(libs.plugins.android.application)
+}
+
+// Version. scripts/build passes both from git, the same scheme every Veil
+// package uses: versionCode is the commit time in minutes times 10, so the set
+// installs in lockstep and a dev/prod pair of one commit share a code.
+def versionCodeEnv = providers.environmentVariable('VEIL_VERSION_CODE')
+def versionNameEnv = providers.environmentVariable('VEIL_VERSION_NAME')
+
+// The Microdroid payload is a cdylib with AVmPayload_main. cargo-ndk builds it
+// into build/rustJniLibs/<abi>/libveil_vm_probe.so; Microdroid reads the
+// binary from the APK's lib/<abi> directory.
+def rustAbis = (findProperty('rustAbis') ?: 'arm64-v8a,x86_64').toString().split(',')
+def rustOut = layout.buildDirectory.dir('rustJniLibs')
+def repoRoot = rootProject.file('..')
+
+def cargoNdk = tasks.register('cargoNdk', Exec) {
+    group = 'build'
+    description = 'Builds the Microdroid vsock probe payload with cargo-ndk.'
+    workingDir = repoRoot
+    def args = ['cargo', 'ndk', '--platform', '34']
+    rustAbis.each { args += ['-t', it] }
+    args += ['-o', rustOut.get().asFile.path, 'build', '--release', '--locked', '-p', 'veil-vm-probe', '-p', 'veil-vm-engine']
+    commandLine args
+    inputs.files(fileTree(repoRoot) {
+        include 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'
+        include 'guest/vm-probe/**', 'guest/vm-engine/**'
+        exclude '**/target/**'
+    })
+    inputs.property('abis', rustAbis.toList())
+    outputs.dir(rustOut)
+}
+
+android {
+    namespace = 'io.github.franticplant.veil.vm'
+    compileSdk = 37
+
+    defaultConfig {
+        // Permanent: the package that holds MANAGE_VIRTUAL_MACHINE.
+        applicationId = 'io.github.franticplant.veil.vm'
+        minSdk = 34
+        targetSdk = 37
+        versionCode = versionCodeEnv.map { it.toInteger() }.getOrElse(1)
+        versionName = versionNameEnv.getOrElse('0.0.0-local')
+    }
+
+    // No debug build type: the VM host is installed and updated like the rest
+    // of the set, always as a release build.
+    buildTypes {
+        release {
+            minifyEnabled = true
+            shrinkResources = true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main {
+            jniLibs.srcDir(rustOut.get().asFile.path)
+        }
+    }
+
+    // Microdroid reads the payload directly from the APK, so keep native libs
+    // uncompressed (the Android default for modern targetSdk).
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
+
+    lint {
+        abortOnError = true
+        warningsAsErrors = true
+        checkReleaseBuilds = true
+        disable 'GradleDependency', 'NewerVersionAvailable', 'AndroidGradlePluginVersion'
+    }
+
+    buildFeatures {
+        aidl = true
+        buildConfig = true
+    }
+}
+
+androidComponents {
+    beforeVariants(selector().withBuildType('debug')) { it.enable = false }
+}
+
+tasks.named('preBuild') { dependsOn cargoNdk }
+
+dependencies {
+    implementation project(':vmapi')
+}

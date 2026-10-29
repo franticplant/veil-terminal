@@ -1,0 +1,18 @@
+[package]
+name = "veil-vm-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+libc.workspace = true
+veil-engine = { path = "../../core/engine" }
+veil-engine-host = { path = "../engine-host" }
+
+[lints]
+workspace = true

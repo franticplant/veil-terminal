@@ -50,6 +50,7 @@ class TerminalView(context: Context) : View(context) {
     /** Sticky modifiers from the extra-keys row; consumed by the next key. */
     var stickyCtrl = false
     var stickyAlt = false
+    var stickyShift = false
     var onStickyConsumed: (() -> Unit)? = null
 
     /** The color theme. */
@@ -593,10 +594,16 @@ class TerminalView(context: Context) : View(context) {
         ctrl: Boolean = false,
         alt: Boolean = false,
     ): Mods {
-        val mods = Mods(ctrl = ctrl || stickyCtrl, alt = alt || stickyAlt, shift = shift)
-        if (stickyCtrl || stickyAlt) {
+        val mods =
+            Mods(
+                ctrl = ctrl || stickyCtrl,
+                alt = alt || stickyAlt,
+                shift = shift || stickyShift,
+            )
+        if (stickyCtrl || stickyAlt || stickyShift) {
             stickyCtrl = false
             stickyAlt = false
+            stickyShift = false
             onStickyConsumed?.invoke()
         }
         return mods
@@ -703,17 +710,47 @@ class TerminalView(context: Context) : View(context) {
             onPasteRequest?.invoke()
             return true
         }
-        // Printable keys from a hardware keyboard.
-        val ch =
+        // A hardware keyboard with AltGr (reported as Ctrl+Alt) produces a character that differs
+        // from the same key without AltGr: | on many layouts, for example. Send it literally
+        // instead of treating Ctrl+Alt as a terminal modifier.
+        val full = event.getUnicodeChar(event.metaState)
+        val bare =
             event.getUnicodeChar(
                 event.metaState and KeyEvent.META_CTRL_MASK.inv() and KeyEvent.META_ALT_MASK.inv()
             )
-        if (ch > 0) {
+        if (event.isCtrlPressed && event.isAltPressed && full > 0 && full != bare) {
+            send(KeyEncoder.text(String(Character.toChars(full))))
+            return true
+        }
+        // Printable keys from a hardware keyboard.
+        if (bare > 0) {
             val mods = takeMods(ctrl = event.isCtrlPressed, alt = event.isAltPressed)
-            send(KeyEncoder.text(String(Character.toChars(ch)), mods))
+            send(KeyEncoder.text(String(Character.toChars(bare)), mods))
+            return true
+        }
+        // Some layouts report the pipe as Shift+backslash without a Unicode mapping.
+        if (
+            keyCode == KeyEvent.KEYCODE_BACKSLASH &&
+                event.isShiftPressed &&
+                !event.isCtrlPressed &&
+                !event.isAltPressed
+        ) {
+            sendText("|")
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    // ACTION_MULTIPLE has no non-deprecated replacement; IMEs still use it for runs of characters.
+    @Suppress("DEPRECATION")
+    override fun onKeyMultiple(keyCode: Int, repeatCount: Int, event: KeyEvent): Boolean {
+        // IMEs that send a run of characters as one event (KEYCODE_UNKNOWN + ACTION_MULTIPLE).
+        val chars = event.characters
+        if (!chars.isNullOrEmpty()) {
+            sendText(chars)
+            return true
+        }
+        return super.onKeyMultiple(keyCode, repeatCount, event)
     }
 
     companion object {

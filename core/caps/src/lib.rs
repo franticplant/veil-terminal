@@ -12,25 +12,39 @@ mod known_hosts;
 
 use std::future::Future;
 use std::io;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::Duration;
 
 use russh::keys::PublicKey;
 use russh::keys::known_hosts::{check_known_hosts_path, learn_known_hosts_path};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use veil_protocol::v1;
 
-/// How a component obtains a connected TCP stream. Today [`DirectDialer`]
-/// connects from this process; later the Network Broker hands over one
-/// approved, already-connected socket and the engine never creates
-/// connections itself.
+/// A connected byte stream the engine may speak SSH over. It is deliberately
+/// not `TcpStream`: the native broker can hand over a socket, and the VM host
+/// hands over a vsock stream, without changing the engine.
+pub trait Connection: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Connection for T {}
+
+/// One approved connection: the stream and, when the broker knows it, the peer
+/// address for diagnostics.
+pub struct Dialed {
+    pub stream: Box<dyn Connection>,
+    pub peer: Option<SocketAddr>,
+}
+
+/// How a component obtains an approved connection. Today [`DirectDialer`]
+/// connects from this process; later the Network Broker hands over one already
+/// connected stream and the engine never creates connections itself.
 pub trait Dialer: Send + Sync + 'static {
     fn dial<'a>(
         &'a self,
         host: &'a str,
         port: u16,
-    ) -> Pin<Box<dyn Future<Output = io::Result<TcpStream>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = io::Result<Dialed>> + Send + 'a>>;
 }
 
 /// Connects directly, with a timeout.
@@ -43,10 +57,17 @@ impl Dialer for DirectDialer {
         &'a self,
         host: &'a str,
         port: u16,
-    ) -> Pin<Box<dyn Future<Output = io::Result<TcpStream>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = io::Result<Dialed>> + Send + 'a>> {
         Box::pin(async move {
             match tokio::time::timeout(self.timeout, TcpStream::connect((host, port))).await {
-                Ok(r) => r,
+                Ok(Ok(stream)) => {
+                    let peer = stream.peer_addr().ok();
+                    Ok(Dialed {
+                        stream: Box::new(stream),
+                        peer,
+                    })
+                }
+                Ok(Err(e)) => Err(e),
                 Err(_) => Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     format!("no connection within {:?}", self.timeout),

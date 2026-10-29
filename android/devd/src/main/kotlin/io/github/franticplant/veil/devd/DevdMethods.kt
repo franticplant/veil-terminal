@@ -8,6 +8,7 @@ import io.github.franticplant.veil.dev.api.MethodSpec
 import io.github.franticplant.veil.dev.api.MethodTable
 import io.github.franticplant.veil.dev.api.ProcSelf
 import io.github.franticplant.veil.dev.api.Scope
+import io.github.franticplant.veil.dev.api.bool
 import io.github.franticplant.veil.dev.api.int
 import io.github.franticplant.veil.dev.api.long
 import io.github.franticplant.veil.dev.api.method
@@ -24,6 +25,7 @@ import org.json.JSONObject
  */
 class DevdMethods(private val app: DevdApp) {
     val table = MethodTable()
+    private val vmHost by lazy { VmHost(app) }
 
     /** Callable before pairing; listed for completeness, handled by the server. */
     private val preAuth =
@@ -311,6 +313,49 @@ class DevdMethods(private val app: DevdApp) {
 
         table.add(method("update.status", Scope.UPDATE, "Recent installs, newest first.")) {
             app.updater.status()
+        }
+
+        table.add(
+            method(
+                "vm.dump",
+                Scope.READ,
+                "The AVF classes and methods visible to the VM host package.",
+            )
+        ) {
+            vmHost.dump()
+        }
+
+        table.add(
+            method(
+                "vm.probe",
+                Scope.OPERATE,
+                "Boots the fixed Microdroid vsock probe and returns its report.",
+                true,
+                bool("protected", "Use a protected VM (default true)."),
+            )
+        ) { p ->
+            vmHost.probe(p.boolOr("protected", true))
+        }
+
+        table.add(
+            method(
+                "vm.stop",
+                Scope.LIFECYCLE,
+                "Stops the VM started by engine mode.",
+                true,
+            )
+        ) {
+            vmHost.stop()
+        }
+
+        table.add(
+            method(
+                "vm.engineLog",
+                Scope.READ,
+                "Recent callbacks and log output from the VM engine payload.",
+            )
+        ) {
+            vmHost.engineLog()
         }
 
         table.add(

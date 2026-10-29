@@ -1,10 +1,14 @@
 package io.github.franticplant.veil.frontend
 
 import android.app.Activity
+import android.app.PictureInPictureParams
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Bundle
+import android.util.Rational
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -22,6 +26,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -37,6 +42,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -91,6 +97,24 @@ import kotlinx.coroutines.withContext
  * [EngineHost.sessions].
  */
 class MainActivity : ComponentActivity() {
+    private val inPip = mutableStateOf(false)
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration,
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        inPip.value = isInPictureInPictureMode
+    }
+
+    /** The floating "hover" window: the terminal keeps its font size and live session. */
+    fun enterHover() {
+        if (!packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) return
+        enterPictureInPictureMode(
+            PictureInPictureParams.Builder().setAspectRatio(Rational(3, 4)).build()
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -104,22 +128,40 @@ class MainActivity : ComponentActivity() {
             val scheme =
                 if (palette.dark) {
                     darkColorScheme(
+                        primary = Color(palette.chromeText),
+                        onPrimary = bg,
+                        primaryContainer = Color(palette.chromeActive),
+                        onPrimaryContainer = Color(palette.chromeText),
+                        secondaryContainer = Color(palette.chromeActive),
+                        onSecondaryContainer = Color(palette.chromeText),
                         background = bg,
                         surface = bg,
+                        surfaceVariant = Color(palette.chrome),
                         onBackground = fg,
                         onSurface = fg,
+                        onSurfaceVariant = Color(palette.chromeText),
                     )
                 } else {
                     lightColorScheme(
+                        primary = Color(palette.chromeText),
+                        onPrimary = bg,
+                        primaryContainer = Color(palette.chromeActive),
+                        onPrimaryContainer = Color(palette.chromeText),
+                        secondaryContainer = Color(palette.chromeActive),
+                        onSecondaryContainer = Color(palette.chromeText),
                         background = bg,
                         surface = bg,
+                        surfaceVariant = Color(palette.chrome),
                         onBackground = fg,
                         onSurface = fg,
+                        onSurfaceVariant = Color(palette.chromeText),
                     )
                 }
             CompositionLocalProvider(LocalPalette provides palette) {
                 MaterialTheme(colorScheme = scheme) {
-                    Surface(Modifier.fillMaxSize(), color = bg) { VeilApp(host, profiles) }
+                    Surface(Modifier.fillMaxSize(), color = bg) {
+                        VeilApp(host, profiles, inPip.value)
+                    }
                 }
             }
         }
@@ -131,21 +173,24 @@ private const val DEFAULT_COLS = 80
 private const val DEFAULT_ROWS = 24
 
 @Composable
-private fun VeilApp(host: EngineHost, profiles: Profiles) {
+private fun VeilApp(host: EngineHost, profiles: Profiles, pip: Boolean) {
     val sessions by host.sessions.sessions.collectAsState()
     var currentId by remember { mutableStateOf<Long?>(null) }
     var showHosts by remember { mutableStateOf(true) }
+    var showSessions by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var lastGrid by remember { mutableStateOf(DEFAULT_COLS to DEFAULT_ROWS) }
     val scope = rememberCoroutineScope()
     val current = sessions.firstOrNull { it.id == currentId }
     val ui by host.uiPrefs.values.collectAsState()
     val inTerminal = !showHosts && current != null
-    val immersive = ui.fullscreen && inTerminal
+    val immersive = ui.fullscreen && inTerminal && !pip
     val activity = LocalContext.current as? Activity
+    val main = LocalContext.current as? MainActivity
     // Immersive: the system bars hide and come back with a swipe from the edge.
     val coverCutout = immersive && ui.coverCutout
-    LaunchedEffect(immersive, coverCutout) {
+    LaunchedEffect(immersive, coverCutout, pip) {
+        if (pip) return@LaunchedEffect
         val window = activity?.window ?: return@LaunchedEffect
         window.attributes =
             window.attributes.apply {
@@ -167,6 +212,7 @@ private fun VeilApp(host: EngineHost, profiles: Profiles) {
         scope.launch {
             try {
                 val saved = profiles.touch(target)
+                host.history.record(saved)
                 val s = host.sessions.open(saved, lastGrid.first, lastGrid.second)
                 currentId = s.id
                 showHosts = false
@@ -184,23 +230,39 @@ private fun VeilApp(host: EngineHost, profiles: Profiles) {
     // Covering the notch: only the keyboard pushes the terminal; text may sit under the cutout.
     val insets = if (coverCutout) WindowInsets.ime else WindowInsets.safeDrawing
     Column(Modifier.fillMaxSize().windowInsetsPadding(insets)) {
-        if (!immersive) {
-            SessionTabs(
-                sessions = sessions,
-                current = if (showHosts) null else current,
-                onSelect = {
-                    currentId = it.id
-                    showHosts = false
-                },
-                onHosts = { showHosts = true },
-            )
+        if (!immersive && !pip) {
+            if (ui.tabsOnTop) {
+                SessionTabs(
+                    sessions = sessions,
+                    current = if (showHosts) null else current,
+                    onSelect = {
+                        currentId = it.id
+                        showHosts = false
+                    },
+                    onHosts = { showHosts = true },
+                )
+            } else if (!showHosts && current != null) {
+                CompactSessionBar(
+                    current = current,
+                    count = sessions.size,
+                    onOpen = { showSessions = true },
+                    onHosts = { showHosts = true },
+                )
+            }
         }
         if (showHosts || current == null) {
-            HostsScreen(host, profiles, onConnect = ::connect)
+            HostsScreen(
+                host,
+                profiles,
+                onConnect = ::connect,
+                onSessions = { showSessions = true },
+            )
         } else {
             TerminalScreen(
                 session = current,
                 prefs = host.uiPrefs,
+                pip = pip,
+                onEnterHover = { main?.enterHover() },
                 onGrid = { lastGrid = it },
                 onReconnect = {
                     host.sessions.forget(current)
@@ -213,6 +275,36 @@ private fun VeilApp(host: EngineHost, profiles: Profiles) {
                 },
             )
         }
+    }
+
+    if (showSessions) {
+        SessionsDialog(
+            sessions = sessions,
+            current = if (showHosts) null else current,
+            onSelect = {
+                currentId = it.id
+                showHosts = false
+                showSessions = false
+            },
+            onKill = { s ->
+                s.close()
+                host.sessions.forget(s)
+                if (currentId == s.id) {
+                    currentId = sessions.firstOrNull { it !== s }?.id
+                    if (currentId == null) showHosts = true
+                }
+            },
+            onReconnect = { s ->
+                host.sessions.forget(s)
+                connect(s.target)
+                showSessions = false
+            },
+            onHosts = {
+                showHosts = true
+                showSessions = false
+            },
+            onDismiss = { showSessions = false },
+        )
     }
 
     error?.let {
@@ -231,17 +323,34 @@ private fun SessionTabs(
     onSelect: (Session) -> Unit,
     onHosts: () -> Unit,
 ) {
+    val palette = LocalPalette.current
+    val chipColors =
+        FilterChipDefaults.filterChipColors(
+            containerColor = Color(palette.chrome),
+            labelColor = Color(palette.chromeText),
+            selectedContainerColor = Color(palette.chromeActive),
+            selectedLabelColor = Color(palette.chromeText),
+        )
     Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
+        Modifier.fillMaxWidth()
+            .background(Color(palette.chrome))
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FilterChip(selected = current == null, onClick = onHosts, label = { Text("Hosts") })
+        FilterChip(
+            selected = current == null,
+            onClick = onHosts,
+            label = { Text("Hosts") },
+            colors = chipColors,
+        )
         for (s in sessions) {
             val status by s.status.collectAsState()
             FilterChip(
                 selected = s === current,
                 onClick = { onSelect(s) },
+                colors = chipColors,
                 label = {
                     // The remote's title (sanitized by the engine), else where the session goes.
                     val v by s.screenVersion.collectAsState()
@@ -272,28 +381,254 @@ private fun SessionTabs(
     }
 }
 
+@Composable
+private fun sessionTitle(s: Session): String {
+    val v by s.screenVersion.collectAsState()
+    return remember(v, s) { synchronized(s.screen) { s.screen.title } }
+        .ifBlank { s.target.displayName }
+}
+
+@Composable
+private fun CompactSessionBar(
+    current: Session,
+    count: Int,
+    onOpen: () -> Unit,
+    onHosts: () -> Unit,
+) {
+    val palette = LocalPalette.current
+    Row(
+        Modifier.fillMaxWidth().background(Color(palette.chrome)).padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(onClick = onOpen) {
+            Text(sessionTitle(current).take(40), color = Color(palette.chromeText))
+        }
+        if (count > 1) {
+            Text(
+                "$count sessions",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(palette.chromeText),
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        TextButton(onClick = onOpen) { Text("Sessions", color = Color(palette.chromeText)) }
+        TextButton(onClick = onHosts) { Text("Hosts", color = Color(palette.chromeText)) }
+    }
+}
+
+/** A searchable session list with the lifecycle actions that are useful away from the terminal. */
+@Composable
+private fun SessionsDialog(
+    sessions: List<Session>,
+    current: Session?,
+    onSelect: (Session) -> Unit,
+    onKill: (Session) -> Unit,
+    onReconnect: (Session) -> Unit,
+    onHosts: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    var peek by remember { mutableStateOf<Session?>(null) }
+    var killing by remember { mutableStateOf<Session?>(null) }
+    val q = query.trim().lowercase()
+    val titles = LinkedHashMap<Long, String>()
+    for (s in sessions) titles[s.id] = sessionTitle(s)
+    val filtered = sessions.filter {
+        q.isEmpty() ||
+            titles[it.id].orEmpty().lowercase().contains(q) ||
+            it.target.displayName.lowercase().contains(q) ||
+            it.target.label.lowercase().contains(q)
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Sessions") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    query,
+                    { query = it },
+                    label = { Text("Search sessions") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                when {
+                    sessions.isEmpty() -> Text("No sessions yet.")
+                    filtered.isEmpty() -> Text("No sessions match.")
+                    else ->
+                        LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                            items(filtered, key = { it.id }) { s ->
+                                val status by s.status.collectAsState()
+                                val title = titles[s.id].orEmpty()
+                                Row(
+                                    Modifier.fillMaxWidth()
+                                        .clickable { onSelect(s) }
+                                        .padding(vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Box(
+                                        Modifier.size(8.dp)
+                                            .background(
+                                                when (status.phase) {
+                                                    SessionPhase.SESSION_PHASE_OPEN ->
+                                                        Color(0xFF98C379)
+                                                    SessionPhase.SESSION_PHASE_CLOSED ->
+                                                        Color(0xFFE06C75)
+                                                    else -> Color(0xFFE5C07B)
+                                                },
+                                                CircleShape,
+                                            )
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            title.take(60) + if (s === current) "  ✓" else "",
+                                            maxLines = 1,
+                                        )
+                                        Text(
+                                            s.target.displayName,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = FontFamily.Monospace,
+                                            maxLines = 1,
+                                        )
+                                        val state =
+                                            status.phase.name
+                                                .removePrefix("SESSION_PHASE_")
+                                                .lowercase() +
+                                                if (status.detail.isBlank()) ""
+                                                else ": ${status.detail.take(80)}"
+                                        Text(
+                                            state,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            maxLines = 1,
+                                        )
+                                    }
+                                    TextButton(onClick = { onSelect(s) }) { Text("Go") }
+                                    TextButton(onClick = { peek = s }) { Text("See") }
+                                    if (status.closed) {
+                                        TextButton(onClick = { onReconnect(s) }) {
+                                            Text("Reconnect")
+                                        }
+                                    } else {
+                                        TextButton(onClick = { killing = s }) { Text("Kill") }
+                                    }
+                                }
+                            }
+                        }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        dismissButton = { TextButton(onClick = onHosts) { Text("Hosts") } },
+    )
+
+    peek?.let { s ->
+        ScreenPeek(
+            session = s,
+            onGo = {
+                peek = null
+                onSelect(s)
+            },
+            onDismiss = { peek = null },
+        )
+    }
+
+    killing?.let { s ->
+        AlertDialog(
+            onDismissRequest = { killing = null },
+            title = { Text("Kill this session?") },
+            text = {
+                Text("The remote process ends. The host stays in your saved hosts and history.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        killing = null
+                        onKill(s)
+                    }
+                ) {
+                    Text("Kill")
+                }
+            },
+            dismissButton = { TextButton(onClick = { killing = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+/** A read-only look at a session's current screen, before switching to it. */
+@Composable
+private fun ScreenPeek(session: Session, onGo: () -> Unit, onDismiss: () -> Unit) {
+    val version by session.screenVersion.collectAsState()
+    val text = remember(version, session) { screenText(session) }
+    val title = sessionTitle(session)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title.take(60)) },
+        text = {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                Text(text, fontFamily = FontFamily.Monospace, fontSize = 9.sp)
+            }
+        },
+        confirmButton = { TextButton(onClick = onGo) { Text("Go") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+private fun screenText(session: Session): String =
+    synchronized(session.screen) {
+        session.screen.cells().joinToString("\n") { row ->
+            row.joinToString("") { it ?: " " }.trimEnd()
+        }
+    }
+
 // ---- Hosts --------------------------------------------------------------
 
 @Composable
-private fun HostsScreen(host: EngineHost, profiles: Profiles, onConnect: (Target) -> Unit) {
+private fun HostsScreen(
+    host: EngineHost,
+    profiles: Profiles,
+    onConnect: (Target) -> Unit,
+    onSessions: () -> Unit,
+) {
     val all by profiles.all.collectAsState()
+    val recent by host.history.all.collectAsState()
+    val liveSessions by host.sessions.sessions.collectAsState()
     var editing by remember { mutableStateOf<Target?>(null) }
     var adding by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(false) }
     var keysOpen by remember { mutableStateOf(false) }
     var knownHosts by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var showRecent by remember { mutableStateOf(false) }
+
+    fun matches(t: Target): Boolean {
+        val q = query.trim().lowercase()
+        if (q.isEmpty()) return true
+        return t.label.lowercase().contains(q) ||
+            t.host.lowercase().contains(q) ||
+            t.username.lowercase().contains(q) ||
+            t.port.toString().contains(q)
+    }
+
+    val hosts = all.filter(::matches)
+    val filteredRecent = recent.filter { matches(it.target) }
 
     Column(
         Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Veil Terminal", style = MaterialTheme.typography.headlineSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Veil Terminal", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.weight(1f))
+            if (liveSessions.isNotEmpty()) {
+                TextButton(onClick = onSessions) { Text("Sessions (${liveSessions.size})") }
+            }
+            Button(onClick = { adding = true }) { Text("Add host") }
+        }
         Row(
             Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Button(onClick = { adding = true }) { Text("Add host") }
             TextButton(onClick = { keysOpen = true }) { Text("Keys") }
             TextButton(onClick = { knownHosts = true }) { Text("Known hosts") }
             TextButton(onClick = { settings = true }) { Text("Settings") }
@@ -304,7 +639,8 @@ private fun HostsScreen(host: EngineHost, profiles: Profiles, onConnect: (Target
                 keysOpen = false
             }
         if (knownHosts) KnownHostsDialog(host) { knownHosts = false }
-        // Quick connect: user@host[:port]; remembered as a profile.
+
+        // Quick connect: user@host[:port]. It appears in Recent; saving it as a host is explicit.
         var quick by remember { mutableStateOf("") }
         val parsed = Profiles.parseQuick(quick)
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -328,6 +664,26 @@ private fun HostsScreen(host: EngineHost, profiles: Profiles, onConnect: (Target
                 Text("Connect")
             }
         }
+        OutlinedTextField(
+            query,
+            { query = it },
+            label = { Text("Search hosts and recent connections") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(
+                selected = !showRecent,
+                onClick = { showRecent = false },
+                label = { Text("Hosts (${all.size})") },
+            )
+            FilterChip(
+                selected = showRecent,
+                onClick = { showRecent = true },
+                label = { Text("Recent (${recent.size})") },
+            )
+        }
+
         val info = host.buildInfo
         Text(
             "${info.versionName} · engine: ${host.backendKind}" +
@@ -335,34 +691,90 @@ private fun HostsScreen(host: EngineHost, profiles: Profiles, onConnect: (Target
             style = MaterialTheme.typography.bodySmall,
             fontFamily = FontFamily.Monospace,
         )
-        if (all.isEmpty()) {
-            Text(
-                "No saved hosts yet. Add one to connect.",
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(all) { t ->
-                Surface(
-                    tonalElevation = 2.dp,
-                    shape = MaterialTheme.shapes.medium,
-                    modifier = Modifier.fillMaxWidth().clickable { onConnect(t) },
-                ) {
-                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                t.label.ifEmpty { t.host },
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                            Text(
-                                "${t.username}@${t.host}:${t.port}",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontFamily = FontFamily.Monospace,
-                            )
+
+        if (!showRecent) {
+            when {
+                all.isEmpty() -> Text("No saved hosts yet. Add one to connect.")
+                hosts.isEmpty() -> Text("No hosts match the search.")
+                else ->
+                    LazyColumn(
+                        Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(hosts) { t ->
+                            Surface(
+                                tonalElevation = 2.dp,
+                                shape = MaterialTheme.shapes.medium,
+                                modifier = Modifier.fillMaxWidth().clickable { onConnect(t) },
+                            ) {
+                                Row(
+                                    Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            t.label.ifEmpty { t.host },
+                                            style = MaterialTheme.typography.titleMedium,
+                                        )
+                                        Text(
+                                            "${t.username}@${t.host}:${t.port}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = FontFamily.Monospace,
+                                        )
+                                    }
+                                    TextButton(onClick = { editing = t }) { Text("Edit") }
+                                }
+                            }
                         }
-                        TextButton(onClick = { editing = t }) { Text("Edit") }
                     }
-                }
+            }
+        } else {
+            when {
+                recent.isEmpty() -> Text("No connections yet.")
+                filteredRecent.isEmpty() -> Text("No recent connections match the search.")
+                else ->
+                    LazyColumn(
+                        Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(filteredRecent, key = { "${it.key}@${it.lastUsed}" }) { e ->
+                            Surface(
+                                tonalElevation = 2.dp,
+                                shape = MaterialTheme.shapes.medium,
+                                modifier =
+                                    Modifier.fillMaxWidth().clickable { onConnect(e.target) },
+                            ) {
+                                Row(
+                                    Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            e.target.label.ifEmpty { e.target.host },
+                                            style = MaterialTheme.typography.titleMedium,
+                                        )
+                                        Text(
+                                            "${e.target.username}@${e.target.host}:${e.target.port}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = FontFamily.Monospace,
+                                        )
+                                        Text(
+                                            relativeTime(e.lastUsed) +
+                                                if (e.count > 1) " · ${e.count}×" else "",
+                                            style = MaterialTheme.typography.labelSmall,
+                                        )
+                                    }
+                                    if (profiles.contains(e.target)) {
+                                        Text("Saved", style = MaterialTheme.typography.labelSmall)
+                                    } else {
+                                        TextButton(onClick = { profiles.save(null, e.target) }) {
+                                            Text("Save")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
             }
         }
     }
@@ -388,6 +800,17 @@ private fun HostsScreen(host: EngineHost, profiles: Profiles, onConnect: (Target
                 editing = null
             },
         )
+    }
+}
+
+/** Short, human-readable age for recent connections. */
+private fun relativeTime(then: Long, now: Long = System.currentTimeMillis()): String {
+    val seconds = ((now - then).coerceAtLeast(0)) / 1000
+    return when {
+        seconds < 60 -> "just now"
+        seconds < 3600 -> "${seconds / 60}m ago"
+        seconds < 86_400 -> "${seconds / 3600}h ago"
+        else -> "${seconds / 86_400}d ago"
     }
 }
 
@@ -522,6 +945,8 @@ private fun ProfileDialog(
 private fun TerminalScreen(
     session: Session,
     prefs: UiPrefs,
+    pip: Boolean,
+    onEnterHover: () -> Unit,
     onGrid: (Pair<Int, Int>) -> Unit,
     onReconnect: () -> Unit,
     onDismiss: () -> Unit,
@@ -530,7 +955,7 @@ private fun TerminalScreen(
     val prompt by session.prompt.collectAsState()
     val version by session.screenVersion.collectAsState()
     var view by remember { mutableStateOf<TerminalView?>(null) }
-    val stickyState = remember { mutableStateListOf(false, false) } // ctrl, alt
+    val stickyState = remember { mutableStateListOf(false, false, false) } // ctrl, alt, shift
     val ui by prefs.values.collectAsState()
     val context = LocalContext.current
     var offer by remember { mutableStateOf<ClipboardOffer?>(null) }
@@ -566,6 +991,7 @@ private fun TerminalScreen(
                         onStickyConsumed = {
                             stickyState[0] = false
                             stickyState[1] = false
+                            stickyState[2] = false
                         }
                         onFontSizeChanged = { size -> prefs.update { it.copy(fontSizeSp = size) } }
                         onPasteRequest = { pasteClipboard(ctx, this) }
@@ -581,6 +1007,7 @@ private fun TerminalScreen(
                     v.session = session
                     v.stickyCtrl = stickyState[0]
                     v.stickyAlt = stickyState[1]
+                    v.stickyShift = stickyState[2]
                     v.palette = Palette.byId(ui.theme)
                 },
             )
@@ -619,20 +1046,20 @@ private fun TerminalScreen(
                     }
                 }
             }
-            if (!ui.extraKeys) {
+            if (!ui.extraKeys && !pip) {
                 // The keys bar is hidden: a small handle brings it back.
                 Box(
                     Modifier.align(Alignment.BottomEnd)
                         .padding(6.dp)
-                        .size(36.dp)
+                        .size(32.dp)
                         .background(
-                            Color(LocalPalette.current.chromeActive).copy(alpha = 0.7f),
+                            Color(LocalPalette.current.chromeActive).copy(alpha = 0.35f),
                             CircleShape,
                         )
                         .clickable { prefs.update { it.copy(extraKeys = true) } },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("▴", color = Color(LocalPalette.current.chromeText))
+                    Text("▴", color = Color(LocalPalette.current.chromeText).copy(alpha = 0.6f))
                 }
             }
         }
@@ -642,17 +1069,21 @@ private fun TerminalScreen(
         if (status.phase != SessionPhase.SESSION_PHASE_OPEN) {
             StatusLine(status.phase, status.detail, status.closed, onReconnect, onDismiss)
         }
-        if (ui.extraKeys) {
+        if (ui.extraKeys && !pip) {
             ExtraKeys(
                 view = view,
                 ctrl = stickyState[0],
                 alt = stickyState[1],
+                shift = stickyState[2],
                 fullscreen = ui.fullscreen,
+                rows = ui.keysRows,
                 onCtrl = { stickyState[0] = !stickyState[0] },
                 onAlt = { stickyState[1] = !stickyState[1] },
+                onShift = { stickyState[2] = !stickyState[2] },
                 onHide = { prefs.update { it.copy(extraKeys = false) } },
                 onFullscreen = { prefs.update { it.copy(fullscreen = !it.fullscreen) } },
                 onSettings = { settings = true },
+                onHover = onEnterHover,
                 onFontSize = { size ->
                     view?.fontSizeSp = size
                     view?.let { v -> prefs.update { it.copy(fontSizeSp = v.fontSizeSp) } }
@@ -725,21 +1156,26 @@ private fun ExtraKeys(
     view: TerminalView?,
     ctrl: Boolean,
     alt: Boolean,
+    shift: Boolean,
     fullscreen: Boolean,
+    rows: Int,
     onCtrl: () -> Unit,
     onAlt: () -> Unit,
+    onShift: () -> Unit,
     onHide: () -> Unit,
     onFullscreen: () -> Unit,
     onSettings: () -> Unit,
+    onHover: () -> Unit,
     onFontSize: (Float) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val palette = LocalPalette.current
+    var fn by remember { mutableStateOf(false) }
     @Composable
     fun K(label: String, active: Boolean = false, action: () -> Unit) {
         Box(
-            Modifier.height(40.dp)
-                .width(44.dp)
+            Modifier.height(38.dp)
+                .width(46.dp)
                 .background(Color(if (active) palette.chromeActive else palette.chrome))
                 .clickable(onClick = action),
             contentAlignment = Alignment.Center,
@@ -747,22 +1183,26 @@ private fun ExtraKeys(
             Text(
                 label,
                 fontFamily = FontFamily.Monospace,
-                fontSize = 13.sp,
+                fontSize = 12.sp,
+                maxLines = 1,
                 color = Color(palette.chromeText),
             )
         }
     }
-    Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(1.dp),
-    ) {
+
+    // Control and navigation. Horizontal scroll keeps every key reachable without shrinking the
+    // terminal; the order is grouped so the common ones stay close to the left edge.
+    @Composable
+    fun Controls() {
         K("▾", action = onHide)
         K(if (fullscreen) "⤡" else "⤢", fullscreen, onFullscreen)
+        K("Hover", action = onHover)
         K("⌨") { view?.showKeyboard() }
         K("⚙", action = onSettings)
         K("Esc") { view?.sendKey(Key.ESCAPE) }
         K("Ctrl", ctrl, onCtrl)
         K("Alt", alt, onAlt)
+        K("Shift", shift, onShift)
         K("Tab") { view?.sendKey(Key.TAB) }
         K("←") { view?.sendKey(Key.LEFT) }
         K("↓") { view?.sendKey(Key.DOWN) }
@@ -772,12 +1212,83 @@ private fun ExtraKeys(
         K("End") { view?.sendKey(Key.END) }
         K("PgUp") { view?.sendKey(Key.PAGE_UP) }
         K("PgDn") { view?.sendKey(Key.PAGE_DOWN) }
-        for (c in listOf("|", "~", "/", "-")) K(c) { view?.sendText(c) }
+        K("Ins") { view?.sendKey(Key.INSERT) }
+        K("Del") { view?.sendKey(Key.DELETE) }
         K("Paste") { view?.let { pasteClipboard(context, it) } }
         K("A−") { view?.let { onFontSize(it.fontSizeSp - 1f) } }
         K("A+") { view?.let { onFontSize(it.fontSizeSp + 1f) } }
     }
+
+    // Symbols, or function keys while Fn is on. This keeps either set reachable without a menu.
+    @Composable
+    fun Symbols() {
+        K("Fn", fn) { fn = !fn }
+        K("⏎") { view?.sendKey(Key.ENTER) }
+        K("⌫") { view?.sendKey(Key.BACKSPACE) }
+        if (fn) {
+            for (n in 1..12) K("F$n") { view?.sendKey(Key.entries[Key.F1.ordinal + n - 1]) }
+        } else {
+            for (c in SYMBOL_KEYS) K(c) { view?.sendText(c) }
+        }
+    }
+
+    if (rows <= 1) {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
+            Controls()
+            Symbols()
+        }
+    } else {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
+            Controls()
+        }
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
+            Symbols()
+        }
+    }
 }
+
+private val SYMBOL_KEYS =
+    listOf(
+        "|",
+        "~",
+        "/",
+        "\\",
+        "-",
+        "_",
+        "=",
+        "+",
+        "[",
+        "]",
+        "{",
+        "}",
+        "(",
+        ")",
+        "<",
+        ">",
+        ";",
+        ":",
+        "'",
+        "\"",
+        "`",
+        "@",
+        "#",
+        "$",
+        "%",
+        "^",
+        "&",
+        "*",
+        "!",
+        "?",
+    )
 
 @Composable
 private fun HostKeyDialog(p: HostKeyPrompt, answer: (HostKeyDecision) -> Unit) {
@@ -954,6 +1465,7 @@ private fun SettingsDialog(prefs: UiPrefs, onDismiss: () -> Unit) {
                         Text(p.name + if (ui.theme == p.id) "  ✓" else "")
                     }
                 }
+                Text("Input", style = MaterialTheme.typography.labelLarge)
                 Text("Remote clipboard (OSC 52)", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     for (c in UiPrefs.ClipboardPolicy.entries) {
@@ -966,6 +1478,19 @@ private fun SettingsDialog(prefs: UiPrefs, onDismiss: () -> Unit) {
                 }
                 SettingSwitch("Keys bar", ui.extraKeys) { on ->
                     prefs.update { it.copy(extraKeys = on) }
+                }
+                Text("Keys bar rows", style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (n in 1..2) {
+                        FilterChip(
+                            selected = ui.keysRows == n,
+                            onClick = { prefs.update { it.copy(keysRows = n) } },
+                            label = { Text(if (n == 1) "1 row" else "2 rows") },
+                        )
+                    }
+                }
+                SettingSwitch("Tabs on top", ui.tabsOnTop) { on ->
+                    prefs.update { it.copy(tabsOnTop = on) }
                 }
                 SettingSwitch("Fullscreen terminal", ui.fullscreen) { on ->
                     prefs.update { it.copy(fullscreen = on) }
@@ -1082,17 +1607,21 @@ private fun SettingSwitch(label: String, on: Boolean, onChange: (Boolean) -> Uni
 }
 
 /**
- * SSH keys: create (StrongBox when the phone has it), copy the public key for authorized_keys,
- * delete. Private keys never leave Android Keystore.
+ * SSH keys: create in StrongBox, the TEE, or whichever is available; copy the public key for
+ * authorized_keys; delete. Private keys never leave Android Keystore.
  */
 @Composable
 private fun KeysDialog(keys: SshKeys, unlockedDefault: Boolean, onDismiss: () -> Unit) {
     val all by keys.keys.collectAsState()
     val context = LocalContext.current
     var name by remember { mutableStateOf("") }
+    var query by remember { mutableStateOf("") }
+    var where by remember { mutableStateOf(SshKeys.Where.AUTO) }
     var error by remember { mutableStateOf<String?>(null) }
     var deleting by remember { mutableStateOf<SshKeys.Key?>(null) }
     var whileUnlocked by remember { mutableStateOf(unlockedDefault) }
+    val q = query.trim().lowercase()
+    val shown = all.filter { q.isEmpty() || it.name.lowercase().contains(q) }
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
@@ -1102,8 +1631,18 @@ private fun KeysDialog(keys: SshKeys, unlockedDefault: Boolean, onDismiss: () ->
                 Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                if (all.isNotEmpty()) {
+                    OutlinedTextField(
+                        query,
+                        { query = it },
+                        label = { Text("Search keys") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 if (all.isEmpty()) Text("No keys yet.")
-                for (k in all) {
+                else if (shown.isEmpty()) Text("No keys match the search.")
+                for (k in shown) {
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
@@ -1146,6 +1685,27 @@ private fun KeysDialog(keys: SshKeys, unlockedDefault: Boolean, onDismiss: () ->
                     label = { Text("New key name") },
                     singleLine = true,
                 )
+                Text("Generate in", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    for (w in SshKeys.Where.entries) {
+                        FilterChip(
+                            selected = where == w,
+                            onClick = { where = w },
+                            label = {
+                                Text(
+                                    when (w) {
+                                        SshKeys.Where.AUTO -> "StrongBox if available"
+                                        SshKeys.Where.STRONGBOX -> "StrongBox only"
+                                        SshKeys.Where.TEE -> "TEE only"
+                                    }
+                                )
+                            },
+                        )
+                    }
+                }
                 SettingSwitch("Usable only while the phone is unlocked", whileUnlocked) {
                     whileUnlocked = it
                 }
@@ -1154,7 +1714,7 @@ private fun KeysDialog(keys: SshKeys, unlockedDefault: Boolean, onDismiss: () ->
                     onClick = {
                         error =
                             try {
-                                keys.create(name, whileUnlocked = whileUnlocked)
+                                keys.create(name, where, whileUnlocked = whileUnlocked)
                                 name = ""
                                 null
                             } catch (e: Exception) {
@@ -1203,6 +1763,7 @@ private fun KnownHostsDialog(host: EngineHost, onDismiss: () -> Unit) {
     }
     var error by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableStateOf(0) }
+    var query by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     LaunchedEffect(reload) {
         try {
@@ -1212,6 +1773,7 @@ private fun KnownHostsDialog(host: EngineHost, onDismiss: () -> Unit) {
             error = e.message
         }
     }
+    val q = query.trim().lowercase()
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
@@ -1222,12 +1784,26 @@ private fun KnownHostsDialog(host: EngineHost, onDismiss: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 error?.let { Text(it, color = Color(0xFFE06C75)) }
+                OutlinedTextField(
+                    query,
+                    { query = it },
+                    label = { Text("Search host or fingerprint") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 val list = entries
+                val shown = list?.filter {
+                    q.isEmpty() ||
+                        it.host.lowercase().contains(q) ||
+                        it.fingerprint.lowercase().contains(q) ||
+                        it.algorithm.lowercase().contains(q)
+                }
                 when {
                     list == null -> Text("Loading…")
                     list.isEmpty() -> Text("No host keys recorded yet.")
+                    shown.isNullOrEmpty() -> Text("No host keys match the search.")
                     else ->
-                        for (k in list) {
+                        for (k in shown) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
                                     Text(if (k.port == 22) k.host else "${k.host}:${k.port}")

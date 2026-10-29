@@ -39,6 +39,10 @@ class HostBackend(
                         engineVersion,
                         "--data-dir",
                         dataDir.path,
+                        "--memory-limit-mb",
+                        "0",
+                        "--nofile",
+                        "256",
                         "--stdio",
                     )
                     .redirectError(File(dataDir, "host.stderr"))

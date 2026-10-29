@@ -7,8 +7,10 @@ import io.github.franticplant.veil.engine.LocalBackend
 import io.github.franticplant.veil.engine.LogRing
 import io.github.franticplant.veil.engine.ProcessBackend
 import io.github.franticplant.veil.engine.SessionRegistry
+import io.github.franticplant.veil.engine.VmBackend
 import io.github.franticplant.veil.frontend.BuildInfo
 import io.github.franticplant.veil.frontend.EngineHost
+import io.github.franticplant.veil.frontend.History
 import io.github.franticplant.veil.frontend.Profiles
 import io.github.franticplant.veil.frontend.SshKeys
 import io.github.franticplant.veil.frontend.UiPrefs
@@ -45,6 +47,7 @@ class VeilApplication : Application(), EngineHost {
             UiPrefs.EnginePlace.NATIVE -> HostBackend(this, BuildConfig.VERSION_NAME, dir)
             UiPrefs.EnginePlace.SERVICE -> ProcessBackend(this, BuildConfig.VERSION_NAME, dir)
             UiPrefs.EnginePlace.LOCAL -> LocalBackend(BuildConfig.VERSION_NAME, dir)
+            UiPrefs.EnginePlace.VM -> VmBackend(this, BuildConfig.VERSION_NAME, dir, log = log)
         }
     }
 
@@ -71,6 +74,8 @@ class VeilApplication : Application(), EngineHost {
     }
 
     override val profiles: Profiles by lazy { Profiles(this) }
+
+    override val history: History by lazy { History(this) }
 
     override val uiPrefs: UiPrefs by lazy { UiPrefs(this) }
 

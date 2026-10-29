@@ -23,8 +23,16 @@
         android:protectionLevel="signature" />
     <uses-permission android:name="io.github.franticplant.veil.permission.DEV_HOOKS" />
 
+    <!-- Signature-level: devd is the only caller of the VM host's probe. -->
+    <permission
+        android:name="io.github.franticplant.veil.permission.VM_HOST"
+        android:label="Control the Veil VM host"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="io.github.franticplant.veil.permission.VM_HOST" />
+
     <queries>
         <package android:name="io.github.franticplant.veil" />
+        <package android:name="io.github.franticplant.veil.vm" />
     </queries>
 
     <application

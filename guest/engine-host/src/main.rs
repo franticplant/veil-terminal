@@ -17,6 +17,8 @@ fn main() -> ExitCode {
     let mut data_dir: Option<PathBuf> = None;
     let mut version = format!("{} (engine-host)", env!("CARGO_PKG_VERSION"));
     let mut mode: Option<(String, Option<String>)> = None;
+    let mut memory_mb = 0u64;
+    let mut nofile = 256u64;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -30,6 +32,14 @@ fn main() -> ExitCode {
                 }
                 i += 1;
             }
+            "--memory-limit-mb" => {
+                memory_mb = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(0);
+                i += 1;
+            }
+            "--nofile" => {
+                nofile = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(256);
+                i += 1;
+            }
             "--stdio" => mode = Some(("stdio".into(), None)),
             "--unix" => {
                 mode = Some(("unix".into(), args.get(i + 1).cloned()));
@@ -41,6 +51,9 @@ fn main() -> ExitCode {
             }
         }
         i += 1;
+    }
+    for warning in veil_engine_host::limits::apply(memory_mb, nofile) {
+        eprintln!("veil-engine-host: limit not applied: {warning}");
     }
     let config = EngineConfig {
         version,
@@ -77,7 +90,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: veil-engine-host [--version NAME] [--data-dir DIR] --stdio | --unix PATH"
+                "usage: veil-engine-host [--version NAME] [--data-dir DIR] [--memory-limit-mb N] [--nofile N] --stdio | --unix PATH"
             );
             return ExitCode::from(2);
         }

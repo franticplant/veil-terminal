@@ -36,6 +36,25 @@ class KeyEncoderTest {
     }
 
     @Test
+    fun stickyShiftShiftsTheNextCharacter() {
+        assertEquals("A", s(KeyEncoder.text("a", Mods(shift = true))))
+        assertEquals("!", s(KeyEncoder.text("1", Mods(shift = true))))
+        assertEquals("|", s(KeyEncoder.text("\\", Mods(shift = true))))
+        assertEquals("|", s(KeyEncoder.text("|")))
+        assertEquals("\u0003", s(KeyEncoder.text("c", Mods(ctrl = true, shift = true))))
+    }
+
+    @Test
+    fun ctrlShiftAndAltCombine() {
+        assertEquals("\u001b[1;6D", s(KeyEncoder.key(Key.LEFT, Mods(ctrl = true, shift = true))))
+        assertEquals(
+            "\u001b[1;8A",
+            s(KeyEncoder.key(Key.UP, Mods(ctrl = true, alt = true, shift = true))),
+        )
+        assertEquals("\u001b\u0003", s(KeyEncoder.text("c", Mods(ctrl = true, alt = true))))
+    }
+
+    @Test
     fun pasteCannotEscapeBracketedMode() {
         val evil = "harmless\u001b[201~rm -rf ~\n"
         assertEquals(
