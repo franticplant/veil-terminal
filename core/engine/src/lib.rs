@@ -30,7 +30,9 @@ use veil_protocol::{
 };
 
 use session::{Answer, Command, Prompter, Prompts};
-pub use veil_caps::{Dialer, DirectDialer, FileHostKeys, HostKeyCheck, HostKeyStore, NoHostKeys};
+pub use veil_caps::{
+    Dialed, Dialer, DirectDialer, FileHostKeys, HostKeyCheck, HostKeyStore, NoHostKeys,
+};
 use veil_obs::{LogRing, SessionStats};
 
 /// Messages queued in each direction before the sender waits.

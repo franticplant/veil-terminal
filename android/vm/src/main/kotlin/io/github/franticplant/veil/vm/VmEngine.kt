@@ -19,11 +19,17 @@ object VmEngine {
     private val lock = Any()
 
     @Volatile private var lastLog = ""
+    @Volatile private var notes = ""
 
-    fun logText(): String = lastLog
+    fun logText(): String = notes + "\n" + lastLog
+
+    fun note(text: String) {
+        notes = (notes + text + "\n").takeLast(4_000)
+        Log.i("VeilVmProbe", text)
+    }
 
     private fun record(text: String) {
-        lastLog = (lastLog + text + "\n").takeLast(8_000)
+        lastLog = (lastLog + text + "\n").takeLast(64_000)
         Log.i("VeilVmProbe", text)
     }
 

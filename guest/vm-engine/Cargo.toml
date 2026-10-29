@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 libc.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "rt"] }
 veil-engine = { path = "../../core/engine" }
 veil-engine-host = { path = "../engine-host" }
 

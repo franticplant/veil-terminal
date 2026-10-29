@@ -1,33 +1,23 @@
 //! The engine payload for Microdroid.
 //!
 //! Microdroid calls `AVmPayload_main`; the payload listens on AF_VSOCK port
-//! 5000, accepts the host's connection, and runs the same
-//! `veil_engine_host::serve()` loop the native process uses. The protocol and
-//! engine do not change: only the pipe is a vsock stream instead of stdio.
+//! 5000 for the engine protocol and port 5001 for the host network broker,
+//! then runs the same `veil_engine_host::serve()` loop the native process uses.
+//! The protocol and engine do not change: only the pipes differ.
 
 #![allow(unsafe_code)]
 
+mod broker;
+
 use std::fs::File;
-use std::mem::size_of;
-use std::os::fd::FromRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::ptr::null_mut;
 use std::sync::Arc;
-use std::time::Duration;
 
-use veil_engine::{DirectDialer, EngineConfig, NoHostKeys};
+use veil_engine::{EngineConfig, NoHostKeys};
 
-const AF_VSOCK: i32 = 40;
-const VMADDR_CID_ANY: u32 = u32::MAX;
-const PORT: u32 = 5000;
-
-#[repr(C)]
-struct SockaddrVm {
-    family: u16,
-    reserved: u16,
-    port: u32,
-    cid: u32,
-    zero: [u8; 4],
-}
+const ENGINE_PORT: u32 = 5000;
+const BROKER_PORT: u32 = 5001;
 
 /// Notify Microdroid only if the loader exported the callback. The host also
 /// retries `connectVsock`, so a missing callback does not hide a ready engine.
@@ -43,53 +33,38 @@ unsafe fn notify_ready() {
 #[unsafe(no_mangle)]
 pub extern "C" fn AVmPayload_main() -> i32 {
     unsafe {
-        let listener = libc::socket(AF_VSOCK, libc::SOCK_STREAM, 0);
-        if listener < 0 {
-            return 1;
-        }
-        let addr = SockaddrVm {
-            family: AF_VSOCK as u16,
-            reserved: 0,
-            port: PORT,
-            cid: VMADDR_CID_ANY,
-            zero: [0; 4],
+        let listener = match broker::listen(ENGINE_PORT) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("veil-vm-engine: cannot listen on {ENGINE_PORT}: {e}");
+                return 1;
+            }
         };
-        if libc::bind(
-            listener,
-            (&addr as *const SockaddrVm).cast(),
-            size_of::<SockaddrVm>() as libc::socklen_t,
-        ) != 0
-        {
-            libc::close(listener);
-            return 2;
-        }
-        if libc::listen(listener, 1) != 0 {
-            libc::close(listener);
-            return 3;
-        }
-        eprintln!("veil-vm-engine: listening on vsock {PORT}");
+        let broker_listener = match broker::listen(BROKER_PORT) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("veil-vm-engine: cannot listen on {BROKER_PORT}: {e}");
+                return 2;
+            }
+        };
+        eprintln!("veil-vm-engine: listening on vsock {ENGINE_PORT} and {BROKER_PORT}");
         notify_ready();
 
-        let connection = libc::accept(listener, null_mut(), null_mut());
+        let connection = libc::accept(listener.as_raw_fd(), null_mut(), null_mut());
         if connection < 0 {
-            libc::close(listener);
-            return 4;
+            eprintln!("veil-vm-engine: engine accept failed");
+            return 3;
         }
         eprintln!("veil-vm-engine: host connected");
         let reader = File::from_raw_fd(connection);
         let writer = match reader.try_clone() {
             Ok(w) => w,
-            Err(_) => {
-                libc::close(listener);
-                return 5;
-            }
+            Err(_) => return 4,
         };
         let config = EngineConfig {
-            version: "veil-engine-host (microdroid)".into(),
+            version: "veil-engine-host (microdroid broker)".into(),
             data_dir: None,
-            dialer: Some(Arc::new(DirectDialer {
-                timeout: Duration::from_secs(10),
-            })),
+            dialer: Some(Arc::new(broker::BrokeredDialer::new(broker_listener))),
             host_keys: Some(Arc::new(NoHostKeys)),
         };
         eprintln!("veil-vm-engine: starting serve");
@@ -98,10 +73,9 @@ pub extern "C" fn AVmPayload_main() -> i32 {
         }
         let result = veil_engine_host::serve(config, reader, writer);
         eprintln!("veil-vm-engine: serve returned {result:?}");
-        libc::close(listener);
         match result {
             Ok(()) => 0,
-            Err(_) => 6,
+            Err(_) => 5,
         }
     }
 }

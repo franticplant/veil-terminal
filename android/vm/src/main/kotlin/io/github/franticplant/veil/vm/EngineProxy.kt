@@ -2,16 +2,23 @@ package io.github.franticplant.veil.vm
 
 import android.content.Context
 import android.os.ParcelFileDescriptor
+import java.io.Closeable
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Bridges the VM's vsock stream to two ordinary pipes. Binder carries the app-facing pipe ends; the
  * VM host keeps the other ends and relays bytes. Pipes avoid handing a vsock descriptor across
  * Binder.
+ *
+ * The same object owns the per-session network broker: the guest engine asks for a host name and
+ * port through [dial], the host connects TCP and relays it to the guest's broker listener on vsock
+ * port 5001.
  */
 class EngineProxy(private val context: Context) {
     private var toVm: ParcelFileDescriptor? = null
     private var fromVm: ParcelFileDescriptor? = null
     private var handle: VmEngine.Handle? = null
+    private val relays = CopyOnWriteArrayList<Closeable>()
 
     /** Returns [write-to-VM, read-from-VM]. */
     fun start(protectedVm: Boolean): Array<ParcelFileDescriptor> {
@@ -46,7 +53,43 @@ class EngineProxy(private val context: Context) {
         return arrayOf(appWrite, appRead)
     }
 
+    /** Relays an already-connected TCP socket to the guest broker listener. */
+    fun dial(host: String, port: Int, tcp: ParcelFileDescriptor) {
+        val h = handle ?: throw IllegalStateException("engine VM is not running")
+        VmEngine.note("broker dial $host:$port")
+        val vmClass = Class.forName("android.system.virtualmachine.VirtualMachine")
+        val pfd =
+            vmClass.getMethod("connectVsock", Long::class.javaPrimitiveType).invoke(h.vm, 5001L)
+                as ParcelFileDescriptor
+        VmEngine.note("broker vsock connected")
+        val toGuest = ParcelFileDescriptor.AutoCloseOutputStream(pfd.dup())
+        val fromGuest = ParcelFileDescriptor.AutoCloseInputStream(pfd)
+        toGuest.write("$host\n$port\n".toByteArray())
+        toGuest.flush()
+        VmEngine.note("broker header sent")
+        val tcpIn = ParcelFileDescriptor.AutoCloseInputStream(tcp)
+        val tcpOut = ParcelFileDescriptor.AutoCloseOutputStream(tcp.dup())
+        Thread {
+            runCatching { tcpIn.copyTo(toGuest) }
+            runCatching { toGuest.close() }
+        }
+            .apply { isDaemon = true }
+            .also { it.start() }
+        Thread {
+            runCatching { fromGuest.copyTo(tcpOut) }
+            runCatching { fromGuest.close() }
+        }
+            .apply { isDaemon = true }
+            .also { it.start() }
+        relays.add(toGuest)
+        relays.add(fromGuest)
+        relays.add(tcpIn)
+        relays.add(tcpOut)
+    }
+
     fun stop() {
+        relays.forEach { runCatching { it.close() } }
+        relays.clear()
         runCatching { toVm?.close() }
         runCatching { fromVm?.close() }
         toVm = null

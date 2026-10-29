@@ -216,6 +216,7 @@ class SessionRegistry(
 
     private suspend fun openOnce(target: Target, cols: Int, rows: Int): Session {
         val c = connection()
+        backend.prepare(target.host, target.port)
         val reply =
             c.request(
                 ClientMsg.newBuilder()

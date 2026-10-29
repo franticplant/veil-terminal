@@ -15,6 +15,12 @@ interface EngineBackend {
 
     /** Opens a connection and completes the Hello handshake. */
     suspend fun connect(clientName: String, scope: CoroutineScope): EngineConnection
+
+    /**
+     * Prepares the network path for a session before OpenSession. Native and local backends dial
+     * directly and do nothing; the VM backend asks its host broker to open the guest's vsock side.
+     */
+    suspend fun prepare(host: String, port: Int) {}
 }
 
 /**

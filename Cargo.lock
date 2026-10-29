@@ -2568,6 +2568,7 @@ name = "veil-vm-engine"
 version = "0.0.1"
 dependencies = [
  "libc",
+ "tokio",
  "veil-engine",
  "veil-engine-host",
 ]

@@ -38,6 +38,13 @@ class VmHostService : Service() {
                     pfds
                 }
 
+            override fun dial(host: String, port: Int, tcp: ParcelFileDescriptor) {
+                synchronized(this@VmHostService) {
+                    val proxy = engine ?: throw IllegalStateException("engine VM is not running")
+                    proxy.dial(host, port, tcp)
+                }
+            }
+
             override fun stopEngine() {
                 synchronized(this@VmHostService) {
                     engine?.let {
