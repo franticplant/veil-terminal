@@ -34,6 +34,7 @@ class VmBackend(
     override val kind = "vm"
 
     private val netBroker by lazy { NetBroker(context, dataDir) }
+    private val nextConnection = java.util.concurrent.atomic.AtomicLong(1)
 
     @Volatile private var active: IVmHost? = null
 
@@ -44,18 +45,19 @@ class VmBackend(
                     ?: throw VmUnavailableException(
                         "the VM engine is not running; reopen the session or select the native engine"
                     )
-            log?.info("vm", "broker prepare $host:$port")
+            val connectionId = nextConnection.getAndIncrement()
+            log?.info("vm", "broker prepare #$connectionId $host:$port")
             try {
                 val pfd = netBroker.dial(host, port)
                 try {
                     // Binder duplicates the fd for the VM service. The app's
                     // copy is done as soon as the call returns; keeping it
                     // would leak one descriptor per session.
-                    vmHost.dial(host, port, pfd)
+                    vmHost.dial(host, port, pfd, connectionId)
                 } finally {
                     runCatching { pfd.close() }
                 }
-                log?.info("vm", "broker ready $host:$port")
+                log?.info("vm", "broker ready #$connectionId $host:$port")
             } catch (e: Exception) {
                 log?.warn("vm", "broker failed $host:$port: ${e.message}")
                 throw IllegalStateException(

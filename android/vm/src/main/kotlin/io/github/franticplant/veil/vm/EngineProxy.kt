@@ -3,6 +3,7 @@ package io.github.franticplant.veil.vm
 import android.content.Context
 import android.os.ParcelFileDescriptor
 import java.io.Closeable
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -21,6 +22,7 @@ class EngineProxy(private val context: Context) {
     private var fromVm: ParcelFileDescriptor? = null
     private var handle: VmEngine.Handle? = null
     private val relays = CopyOnWriteArrayList<Relay>()
+    private val activeConnections = ConcurrentHashMap.newKeySet<Long>()
 
     /** Returns [write-to-VM, read-from-VM]. */
     fun start(
@@ -60,27 +62,38 @@ class EngineProxy(private val context: Context) {
     }
 
     /** Relays an already-connected TCP socket to the guest broker listener. */
-    fun dial(host: String, port: Int, tcp: ParcelFileDescriptor) {
+    fun dial(host: String, port: Int, tcp: ParcelFileDescriptor, connectionId: Long) {
         val h = handle ?: throw IllegalStateException("engine VM is not running")
-        VmEngine.note("broker dial $host:$port")
+        if (activeConnections.contains(connectionId)) {
+            tcp.close()
+            throw IllegalStateException("duplicate VM broker connection #$connectionId")
+        }
+        VmEngine.note("broker dial #$connectionId $host:$port")
         val vmClass = Class.forName("android.system.virtualmachine.VirtualMachine")
         val pfd =
             vmClass.getMethod("connectVsock", Long::class.javaPrimitiveType).invoke(h.vm, 5001L)
                 as ParcelFileDescriptor
-        VmEngine.note("broker vsock connected")
+        VmEngine.note("broker vsock connected #$connectionId")
         val toGuest = ParcelFileDescriptor.AutoCloseOutputStream(pfd.dup())
         val fromGuest = ParcelFileDescriptor.AutoCloseInputStream(pfd)
         val tcpIn = ParcelFileDescriptor.AutoCloseInputStream(tcp)
         val tcpOut = ParcelFileDescriptor.AutoCloseOutputStream(tcp.dup())
         val relay =
-            Relay(toGuest, fromGuest, tcpIn, tcpOut) {
+            Relay(connectionId, toGuest, fromGuest, tcpIn, tcpOut) {
                 relays.remove(it)
+                activeConnections.remove(it.connectionId)
+                VmEngine.note("broker closed #${it.connectionId}")
             }
+        if (!activeConnections.add(connectionId)) {
+            tcp.close()
+            relay.close()
+            throw IllegalStateException("duplicate VM broker connection #$connectionId")
+        }
         relays.add(relay)
         try {
             toGuest.write("$host\n$port\n".toByteArray())
             toGuest.flush()
-            VmEngine.note("broker header sent")
+            VmEngine.note("broker header sent #$connectionId")
             Thread {
                     try {
                         tcpIn.copyTo(toGuest)
@@ -112,6 +125,7 @@ class EngineProxy(private val context: Context) {
     fun stop() {
         relays.forEach { runCatching { it.close() } }
         relays.clear()
+        activeConnections.clear()
         runCatching { toVm?.close() }
         runCatching { fromVm?.close() }
         toVm = null
@@ -122,6 +136,7 @@ class EngineProxy(private val context: Context) {
 
     /** One broker relay: two directions, removed once both have finished or it is stopped. */
     private class Relay(
+        val connectionId: Long,
         private val toGuest: Closeable,
         private val fromGuest: Closeable,
         private val tcpIn: Closeable,

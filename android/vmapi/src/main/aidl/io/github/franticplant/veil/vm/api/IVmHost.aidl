@@ -21,7 +21,7 @@ interface IVmHost {
     ParcelFileDescriptor[] startEngine(boolean protectedVm, int memoryMiB, boolean diagnostics);
 
     /** Relays an already-connected TCP socket to the guest broker. */
-    void dial(String host, int port, in ParcelFileDescriptor tcp);
+    void dial(String host, int port, in ParcelFileDescriptor tcp, long connectionId);
 
     /** Stops the VM started by startEngine. */
     void stopEngine();
