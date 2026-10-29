@@ -68,6 +68,12 @@ class VmBackend(
             Unit
         }
 
+    override suspend fun hostStats(): org.json.JSONObject? =
+        withContext(Dispatchers.IO) {
+            val host = active ?: return@withContext null
+            runCatching { org.json.JSONObject(host.stats()) }.getOrNull()
+        }
+
     override suspend fun connect(clientName: String, scope: CoroutineScope): EngineConnection =
         withContext(Dispatchers.IO) {
             val handle =

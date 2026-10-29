@@ -25,7 +25,7 @@ usage: veil-ctl [-a HOST:PORT] COMMAND [ARGS]
   methods [--all]         the methods this pairing may call (--all: every method)
   call METHOD [k=v | k:=JSON]...
                           call any method; prints the result as JSON
-  logs [app|engine|devd] [-f] [--level L] [--grep TEXT]
+  logs [app|engine|devd|vm] [-f] [--level L] [--grep TEXT]
                           read a log ring (default app); -f follows it
   screen ID               print a session's screen
   update APK...           upload, verify and install builds (Veil and/or devd)
@@ -368,15 +368,7 @@ fn logs(ctx: &Ctx, args: &[String]) -> Result<ExitCode, String> {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "app" | "engine" | "devd" => {
-                source = if args[i] == "app" {
-                    "app"
-                } else if args[i] == "engine" {
-                    "engine"
-                } else {
-                    "devd"
-                }
-            }
+            "app" | "engine" | "devd" | "vm" => source = args[i].as_str(),
             "-f" | "--follow" => follow = true,
             "--level" => {
                 extra.insert(
@@ -396,8 +388,34 @@ fn logs(ctx: &Ctx, args: &[String]) -> Result<ExitCode, String> {
         }
         i += 1;
     }
-    let method = format!("{source}.logs");
     let mut c = ctx.connect()?;
+    if source == "vm" {
+        let grep = extra.get("grep").and_then(Value::as_str);
+        let mut seen = 0usize;
+        loop {
+            let text = c
+                .call("vm.engineLog", json!({}))
+                .map_err(|e| e.to_string())?
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            let lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
+            if seen > lines.len() {
+                seen = 0;
+            }
+            for line in lines.iter().skip(seen) {
+                if grep.is_none_or(|g| line.to_lowercase().contains(&g.to_lowercase())) {
+                    println!("[vm] {line}");
+                }
+            }
+            seen = lines.len();
+            if !follow {
+                return Ok(ExitCode::SUCCESS);
+            }
+            std::thread::sleep(Duration::from_millis(700));
+        }
+    }
+    let method = format!("{source}.logs");
     let mut after = 0u64;
     loop {
         let mut params = extra.clone();

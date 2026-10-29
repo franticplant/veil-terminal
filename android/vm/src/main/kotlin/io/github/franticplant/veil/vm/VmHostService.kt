@@ -71,6 +71,8 @@ class VmHostService : Service() {
             }
 
             override fun engineLog(): String = VmEngine.logText()
+
+            override fun stats(): String = engine?.stats()?.toString() ?: "{}"
         }
 
     override fun onBind(intent: Intent?): IBinder {

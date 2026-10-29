@@ -1,12 +1,18 @@
 package io.github.franticplant.veil.vm
 
 import android.content.Context
+import android.os.Debug
 import android.os.ParcelFileDescriptor
+import android.os.Process
+import android.os.SystemClock
 import java.io.Closeable
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import org.json.JSONObject
 
 /**
  * Bridges the VM's vsock stream to two ordinary pipes. Binder carries the app-facing pipe ends; the
@@ -23,6 +29,12 @@ class EngineProxy(private val context: Context) {
     private var handle: VmEngine.Handle? = null
     private val relays = CopyOnWriteArrayList<Relay>()
     private val activeConnections = ConcurrentHashMap.newKeySet<Long>()
+    private val totalConnections = AtomicLong()
+    private val engineStarts = AtomicLong()
+    @Volatile private var protectedVm = false
+    @Volatile private var memoryMiB = 0
+    @Volatile private var engineStartedAtMs = 0L
+    @Volatile private var engineReadyAtMs = 0L
 
     /** Returns [write-to-VM, read-from-VM]. */
     fun start(
@@ -31,6 +43,10 @@ class EngineProxy(private val context: Context) {
         diagnostics: Boolean,
     ): Array<ParcelFileDescriptor> {
         stop()
+        this.protectedVm = protectedVm
+        this.memoryMiB = memoryMiB
+        engineStartedAtMs = SystemClock.elapsedRealtime()
+        engineStarts.incrementAndGet()
         val up = ParcelFileDescriptor.createPipe() // [read by proxy, write by app]
         val down = ParcelFileDescriptor.createPipe() // [read by app, write by proxy]
         val appWrite = up[1]
@@ -49,6 +65,7 @@ class EngineProxy(private val context: Context) {
         toVm = proxyRead
         fromVm = proxyWrite
         handle = h
+        engineReadyAtMs = SystemClock.elapsedRealtime()
         Thread {
             try {
                 bridge(h.pfd, proxyRead, proxyWrite)
@@ -89,6 +106,7 @@ class EngineProxy(private val context: Context) {
             relay.close()
             throw IllegalStateException("duplicate VM broker connection #$connectionId")
         }
+        totalConnections.incrementAndGet()
         relays.add(relay)
         try {
             toGuest.write("$host\n$port\n".toByteArray())
@@ -122,10 +140,41 @@ class EngineProxy(private val context: Context) {
         }
     }
 
+    fun stats(): JSONObject {
+        val status = runCatching { File("/proc/self/status").readLines() }.getOrDefault(emptyList())
+        var rssKb = 0L
+        var threads = 0
+        for (line in status) {
+            when {
+                line.startsWith("VmRSS:") ->
+                    rssKb = line.substringAfter(':').trim().substringBefore(' ').toLongOrNull() ?: 0
+                line.startsWith("Threads:") ->
+                    threads = line.substringAfter(':').trim().toIntOrNull() ?: 0
+            }
+        }
+        val now = SystemClock.elapsedRealtime()
+        return JSONObject()
+            .put("pid", Process.myPid())
+            .put("uptimeMs", now - Process.getStartElapsedRealtime())
+            .put("cpuMs", Process.getElapsedCpuTime())
+            .put("rssKb", rssKb)
+            .put("pssKb", Debug.getPss())
+            .put("threads", threads)
+            .put("fds", File("/proc/self/fd").list()?.size ?: -1)
+            .put("protected", protectedVm)
+            .put("memoryMiB", memoryMiB)
+            .put("engineRunning", handle != null)
+            .put("engineStarts", engineStarts.get())
+            .put("bootMs", if (engineReadyAtMs > 0) engineReadyAtMs - engineStartedAtMs else -1)
+            .put("activeConnections", activeConnections.size)
+            .put("totalConnections", totalConnections.get())
+    }
+
     fun stop() {
         relays.forEach { runCatching { it.close() } }
         relays.clear()
         activeConnections.clear()
+        engineReadyAtMs = 0L
         runCatching { toVm?.close() }
         runCatching { fromVm?.close() }
         toVm = null

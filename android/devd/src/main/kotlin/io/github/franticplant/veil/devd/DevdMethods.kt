@@ -360,6 +360,16 @@ class DevdMethods(private val app: DevdApp) {
 
         table.add(
             method(
+                "vm.stats",
+                Scope.READ,
+                "VM host process and relay counters: RAM, CPU, fds, boot time, active connections.",
+            )
+        ) {
+            JSONObject(vmHost.stats())
+        }
+
+        table.add(
+            method(
                 "app.start",
                 Scope.LIFECYCLE,
                 "Makes sure Veil is running (binding to DevHooks starts its process) and returns app.info.",

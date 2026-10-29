@@ -28,4 +28,7 @@ interface IVmHost {
 
     /** Recent payload callbacks and VM log output, for diagnostics. */
     String engineLog();
+
+    /** VM host process and active relay counters, as JSON. */
+    String stats();
 }

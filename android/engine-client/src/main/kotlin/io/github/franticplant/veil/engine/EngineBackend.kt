@@ -21,6 +21,9 @@ interface EngineBackend {
      * directly and do nothing; the VM backend asks its host broker to open the guest's vsock side.
      */
     suspend fun prepare(host: String, port: Int) {}
+
+    /** Optional host-side counters, for backends that have a separate supervising process. */
+    suspend fun hostStats(): org.json.JSONObject? = null
 }
 
 /**

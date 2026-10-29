@@ -138,6 +138,9 @@ class SessionRegistry(
             .expect(EngineMsg.BodyCase.ENGINE_STATS)
             .engineStats
 
+    /** Counters from a supervising backend (the VM host), if it has any. */
+    suspend fun backendStats(): org.json.JSONObject? = backend.hostStats()
+
     suspend fun engineLogs(afterSeq: Long, max: Int, minLevel: LogLevel): LogBatch =
         connection()
             .request(

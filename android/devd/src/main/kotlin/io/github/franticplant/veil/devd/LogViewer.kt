@@ -58,6 +58,7 @@ enum class LogSource(val label: String) {
     ACCESS("Access"),
     APP("Veil app"),
     ENGINE("Veil engine"),
+    VM("Veil VM"),
 }
 
 /** Entries kept in memory per source; older ones fall off the top. */
@@ -215,6 +216,25 @@ private suspend fun fetch(
                         ) as JSONObject
                     list(r.getJSONArray("entries")) to r.getLong("nextSeq")
                 }
+            }
+            LogSource.VM -> {
+                val text = d.call("vm.engineLog") as? String ?: ""
+                val lines = text.lineSequence().filter { it.isNotBlank() }.toList()
+                val start =
+                    if (first || cursor > lines.size) 0
+                    else cursor.toInt().coerceAtLeast(0)
+                val now = System.currentTimeMillis()
+                val got =
+                    lines.drop(start).mapIndexed { i, line ->
+                        JSONObject()
+                            .put("seq", (start + i + 1).toLong())
+                            .put("unixMs", now)
+                            .put("level", "info")
+                            .put("component", "vm")
+                            .put("session", 0)
+                            .put("message", line)
+                    }
+                got to lines.size.toLong()
             }
             LogSource.APP,
             LogSource.ENGINE -> {

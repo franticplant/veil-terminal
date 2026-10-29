@@ -21,6 +21,8 @@ class VmHost(private val context: Context) {
 
     fun engineLog(): String = call { it.engineLog() }
 
+    fun stats(): String = call { it.stats() }
+
     fun stop(): String = call {
         it.stopEngine()
         "stopped"

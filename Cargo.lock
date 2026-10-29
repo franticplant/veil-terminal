@@ -2542,6 +2542,7 @@ dependencies = [
 name = "veil-obs"
 version = "0.0.1"
 dependencies = [
+ "libc",
  "veil-protocol",
 ]
 

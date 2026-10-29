@@ -1,3 +1,5 @@
+#![allow(unsafe_code)] // clock_gettime is the only unsafe call.
+
 //! Observability: a component's log ring and per-session counters.
 //!
 //! Every component, whether in the app, an Android broker or a Microdroid
@@ -250,13 +252,16 @@ pub fn process_metrics() -> v1::ProcessMetrics {
         m.cpu_user_ms = field(14) * tick_ms;
         m.cpu_system_ms = field(15) * tick_ms;
         let start_ms = field(22) * tick_ms;
-        if let Ok(up) = std::fs::read_to_string("/proc/uptime")
-            && let Some(secs) = up
-                .split_whitespace()
-                .next()
-                .and_then(|v| v.parse::<f64>().ok())
-        {
-            m.uptime_ms = ((secs * 1000.0) as u64).saturating_sub(start_ms);
+        // /proc/uptime is blocked by Microdroid's SELinux policy. CLOCK_BOOTTIME
+        // gives the same process age without a procfs read (and therefore
+        // without an audit entry every sampler tick).
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) } == 0 {
+            let boot_ms = (ts.tv_sec as u64) * 1000 + (ts.tv_nsec as u64) / 1_000_000;
+            m.uptime_ms = boot_ms.saturating_sub(start_ms);
         }
     }
     m

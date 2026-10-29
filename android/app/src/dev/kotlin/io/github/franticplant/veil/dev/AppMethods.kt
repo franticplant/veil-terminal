@@ -862,6 +862,20 @@ class AppMethods(private val app: VeilApplication) {
                 org.json
                     .JSONArray()
                     .put(io.github.franticplant.veil.dev.api.ProcSelf.sample("veil-app"))
+            val host = runCatching { blocking(3_000) { registry.backendStats() } }.getOrNull()
+            if (host != null) {
+                processes.put(
+                    JSONObject()
+                        .put("name", "veil-vm")
+                        .put("pid", host.optLong("pid"))
+                        .put("uptimeMs", host.optLong("uptimeMs"))
+                        .put("cpuMs", host.optLong("cpuMs"))
+                        .put("rssKb", host.optLong("rssKb"))
+                        .put("pssKb", host.optLong("pssKb"))
+                        .put("threads", host.optInt("threads"))
+                        .put("fds", host.optInt("fds"))
+                )
+            }
             val sessions = org.json.JSONArray()
             val conn = registry.currentConnection
             if (conn != null) {
@@ -908,6 +922,7 @@ class AppMethods(private val app: VeilApplication) {
                 .put("engineBackend", registry.backendKind)
                 .put("processes", processes)
                 .put("sessions", sessions)
+                .put("vm", host ?: JSONObject.NULL)
                 .put(
                     "uidTraffic",
                     JSONObject()

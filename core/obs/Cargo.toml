@@ -9,6 +9,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+libc.workspace = true
 veil-protocol.workspace = true
 
 [lints]
