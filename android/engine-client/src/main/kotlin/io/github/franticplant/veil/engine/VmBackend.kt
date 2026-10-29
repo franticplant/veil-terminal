@@ -8,8 +8,6 @@ import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import io.github.franticplant.veil.vm.api.IVmHost
 import java.io.File
-import java.net.InetSocketAddress
-import java.net.Socket
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -35,26 +33,21 @@ class VmBackend(
     override val kind = "vm"
 
     private val fallback = HostBackend(context, engineVersion, dataDir)
+    private val netBroker by lazy { NetBroker(context, dataDir) }
 
     @Volatile private var active: IVmHost? = null
-    private val brokerSockets = CopyOnWriteArrayList<Socket>()
     private val brokerPfds = CopyOnWriteArrayList<ParcelFileDescriptor>()
 
     override suspend fun prepare(host: String, port: Int) =
         withContext(Dispatchers.IO) {
             val vmHost = active ?: return@withContext
             log?.info("vm", "broker prepare $host:$port")
-            val socket = Socket()
             try {
-                socket.connect(InetSocketAddress(host, port), 10_000)
-                log?.info("vm", "broker tcp connected $host:$port")
-                val pfd = ParcelFileDescriptor.fromSocket(socket)
+                val pfd = netBroker.dial(host, port)
                 vmHost.dial(host, port, pfd)
-                brokerSockets.add(socket)
                 brokerPfds.add(pfd)
                 log?.info("vm", "broker ready $host:$port")
             } catch (e: Exception) {
-                runCatching { socket.close() }
                 log?.warn("vm", "broker failed $host:$port: ${e.message}")
                 throw IllegalStateException(
                     "VM network broker could not reach $host:$port: ${e.message}",
@@ -125,10 +118,9 @@ class VmBackend(
             keep = true
             return Handle(context, connection, host, pfds) {
                 active = null
-                brokerSockets.forEach { runCatching { it.close() } }
                 brokerPfds.forEach { runCatching { it.close() } }
-                brokerSockets.clear()
                 brokerPfds.clear()
+                runCatching { netBroker.close() }
             }
         } finally {
             if (!keep) runCatching { context.unbindService(connection) }

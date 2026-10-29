@@ -9,6 +9,7 @@ use std::io::{Read, Write};
 use std::thread;
 use std::time::Duration;
 
+pub mod broker;
 pub mod limits;
 
 use veil_engine::{Engine, EngineConfig, Recv};

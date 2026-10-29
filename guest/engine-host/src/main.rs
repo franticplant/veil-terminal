@@ -2,6 +2,7 @@
 //!
 //!   veil-engine-host [--version NAME] --data-dir DIR --stdio
 //!   veil-engine-host --data-dir DIR --unix PATH     (one connection at a time)
+//!   veil-engine-host --net-broker PATH              (host TCP relay)
 //!
 //! Frames on the stream are `veil-wire` frames of engine protocol messages.
 //! In the Microdroid payload the same `serve` runs on a vsock connection.
@@ -41,6 +42,10 @@ fn main() -> ExitCode {
                 i += 1;
             }
             "--stdio" => mode = Some(("stdio".into(), None)),
+            "--net-broker" => {
+                mode = Some(("net-broker".into(), args.get(i + 1).cloned()));
+                i += 1;
+            }
             "--unix" => {
                 mode = Some(("unix".into(), args.get(i + 1).cloned()));
                 i += 1;
@@ -64,6 +69,9 @@ fn main() -> ExitCode {
     let result = match mode {
         Some((m, _)) if m == "stdio" => {
             veil_engine_host::serve(config, std::io::stdin(), std::io::stdout())
+        }
+        Some((m, Some(path))) if m == "net-broker" => {
+            veil_engine_host::broker::serve(std::path::Path::new(&path))
         }
         Some((_, Some(path))) => {
             let _ = std::fs::remove_file(&path);
@@ -90,7 +98,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: veil-engine-host [--version NAME] [--data-dir DIR] [--memory-limit-mb N] [--nofile N] --stdio | --unix PATH"
+                "usage: veil-engine-host [--version NAME] [--data-dir DIR] [--memory-limit-mb N] [--nofile N] --stdio | --unix PATH | --net-broker PATH"
             );
             return ExitCode::from(2);
         }
