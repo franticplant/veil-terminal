@@ -204,6 +204,8 @@ class VmBackend(
     }
 }
 
-/** VM was explicitly selected and could not be used; the user chooses whether to retry or go native. */
+/**
+ * VM was explicitly selected and could not be used; the user chooses whether to retry or go native.
+ */
 class VmUnavailableException(message: String, cause: Throwable? = null) :
     IllegalStateException(message, cause)

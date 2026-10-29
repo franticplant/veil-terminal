@@ -112,29 +112,29 @@ class EngineProxy(private val context: Context) {
             toGuest.flush()
             VmEngine.note("broker header sent #$connectionId")
             Thread {
-                    try {
-                        tcpIn.copyTo(toGuest)
-                    } catch (e: Throwable) {
-                        VmEngine.note("broker upload #$connectionId ended: $e")
-                    } finally {
-                        // Either direction ending means the SSH connection is
-                        // finished. Close the other direction too: waiting for
-                        // both leaves a relay and its descriptors behind when
-                        // one side only half-closes.
-                        relay.close()
-                    }
+                try {
+                    tcpIn.copyTo(toGuest)
+                } catch (e: Throwable) {
+                    VmEngine.note("broker upload #$connectionId ended: $e")
+                } finally {
+                    // Either direction ending means the SSH connection is
+                    // finished. Close the other direction too: waiting for
+                    // both leaves a relay and its descriptors behind when
+                    // one side only half-closes.
+                    relay.close()
                 }
+            }
                 .apply { isDaemon = true }
                 .also { it.start() }
             Thread {
-                    try {
-                        fromGuest.copyTo(tcpOut)
-                    } catch (e: Throwable) {
-                        VmEngine.note("broker download #$connectionId ended: $e")
-                    } finally {
-                        relay.close()
-                    }
+                try {
+                    fromGuest.copyTo(tcpOut)
+                } catch (e: Throwable) {
+                    VmEngine.note("broker download #$connectionId ended: $e")
+                } finally {
+                    relay.close()
                 }
+            }
                 .apply { isDaemon = true }
                 .also { it.start() }
         } catch (e: Exception) {

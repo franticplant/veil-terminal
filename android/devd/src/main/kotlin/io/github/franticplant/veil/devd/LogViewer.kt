@@ -220,9 +220,7 @@ private suspend fun fetch(
             LogSource.VM -> {
                 val text = d.call("vm.engineLog") as? String ?: ""
                 val lines = text.lineSequence().filter { it.isNotBlank() }.toList()
-                val start =
-                    if (first || cursor > lines.size) 0
-                    else cursor.toInt().coerceAtLeast(0)
+                val start = if (first || cursor > lines.size) 0 else cursor.toInt().coerceAtLeast(0)
                 val now = System.currentTimeMillis()
                 val got =
                     lines.drop(start).mapIndexed { i, line ->

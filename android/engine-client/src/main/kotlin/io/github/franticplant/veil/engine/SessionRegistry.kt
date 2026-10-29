@@ -163,7 +163,8 @@ class SessionRegistry(
             try {
                 // Do not boot a VM just to open the known-hosts screen. Native backends have no
                 // such cost, and listing their file is useful before the first session.
-                val connection = currentConnection ?: if (backend.kind == "vm") null else connection()
+                val connection =
+                    currentConnection ?: if (backend.kind == "vm") null else connection()
                 connection
                     ?.request(
                         ClientMsg.newBuilder().setListHostKeys(ListHostKeys.getDefaultInstance())
@@ -217,7 +218,9 @@ class SessionRegistry(
             session.onPrompt(Prompt.HostKey(prompt))
             return
         }
-        when (val check = store.check(prompt.host, prompt.port, prompt.algorithm, prompt.fingerprint)) {
+        when (
+            val check = store.check(prompt.host, prompt.port, prompt.algorithm, prompt.fingerprint)
+        ) {
             is KnownHostsStore.Check.Known -> {
                 log.info(
                     "hostkeys",
@@ -323,7 +326,9 @@ class SessionRegistry(
     }
 
     private suspend fun openOnce(target: Target, cols: Int, rows: Int): Session =
-        openLock.withLock { openOnceLocked(target, cols, rows) }
+        openLock.withLock {
+            openOnceLocked(target, cols, rows)
+        }
 
     private suspend fun openOnceLocked(target: Target, cols: Int, rows: Int): Session {
         val c = connection()

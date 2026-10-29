@@ -25,7 +25,8 @@ import org.json.JSONObject
  * beyond the markers the scenario itself prints.
  */
 internal class Scenarios(private val app: VeilApplication) {
-    private val registry get() = app.sessions
+    private val registry
+        get() = app.sessions
 
     companion object {
         /** Bumped when a scenario's steps or report change meaning. */

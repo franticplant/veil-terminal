@@ -40,9 +40,7 @@ class VmHostService : Service() {
                 synchronized(this@VmHostService) {
                     engine?.let {
                         if (it.hasActiveConnections()) {
-                            throw IllegalStateException(
-                                "the VM engine still has active sessions"
-                            )
+                            throw IllegalStateException("the VM engine still has active sessions")
                         }
                         it.stop()
                         engine = null
@@ -86,7 +84,9 @@ class VmHostService : Service() {
             override fun engineLog(): String = VmEngine.logText()
 
             override fun stats(): String {
-                val base = runCatching { JSONObject(engine?.stats()?.toString() ?: "{}") }
+                val base = runCatching {
+                    JSONObject(engine?.stats()?.toString() ?: "{}")
+                }
                     .getOrDefault(JSONObject())
                 return base.put("foreground", foreground).toString()
             }
@@ -132,13 +132,12 @@ class VmHostService : Service() {
 
     private fun linkClient(client: IBinder) {
         unlinkClient()
-        val death =
-            IBinder.DeathRecipient {
-                synchronized(this) {
-                    Log.i(TAG, "client died; stopping the VM")
-                    stopEngineInternal()
-                }
+        val death = IBinder.DeathRecipient {
+            synchronized(this) {
+                Log.i(TAG, "client died; stopping the VM")
+                stopEngineInternal()
             }
+        }
         try {
             client.linkToDeath(death, 0)
             clientToken = client

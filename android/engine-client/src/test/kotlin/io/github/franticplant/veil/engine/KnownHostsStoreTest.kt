@@ -51,8 +51,8 @@ class KnownHostsStoreTest {
         )
         assertEquals(
             "SHA256:new",
-            (store.check("host", 22, "ssh-ed25519", "SHA256:other") as
-                    KnownHostsStore.Check.Changed)
+            (store.check("host", 22, "ssh-ed25519", "SHA256:other")
+                    as KnownHostsStore.Check.Changed)
                 .pin
                 .fingerprint,
         )
@@ -68,7 +68,8 @@ class KnownHostsStoreTest {
             good.example	2222	ssh-ed25519	SHA256:good
             bad-port	not-a-port	ssh-ed25519	SHA256:bad
             too-few	fields
-            """.trimIndent()
+            """
+                .trimIndent()
         )
         val store = KnownHostsStore(path, LogRing(logcat = false))
         assertEquals(

@@ -48,10 +48,8 @@ class VeilApplication : Application(), EngineHost {
 
     private val initialBackend: EngineBackend by lazy {
         when (uiPrefs.values.value.engine) {
-            UiPrefs.EnginePlace.NATIVE ->
-                HostBackend(this, BuildConfig.VERSION_NAME, engineDir)
-            UiPrefs.EnginePlace.SERVICE ->
-                ProcessBackend(this, BuildConfig.VERSION_NAME, engineDir)
+            UiPrefs.EnginePlace.NATIVE -> HostBackend(this, BuildConfig.VERSION_NAME, engineDir)
+            UiPrefs.EnginePlace.SERVICE -> ProcessBackend(this, BuildConfig.VERSION_NAME, engineDir)
             UiPrefs.EnginePlace.LOCAL -> LocalBackend(BuildConfig.VERSION_NAME, engineDir)
             UiPrefs.EnginePlace.VM ->
                 VmBackend(
@@ -146,7 +144,10 @@ class VeilApplication : Application(), EngineHost {
         // than migrated; hosts will be trusted once through the normal prompt.
         val legacyKnownHosts = File(engineDir, "known_hosts")
         if (legacyKnownHosts.isFile && legacyKnownHosts.delete()) {
-            log.info("hostkeys", "discarded legacy native known_hosts; frontend pins are authoritative")
+            log.info(
+                "hostkeys",
+                "discarded legacy native known_hosts; frontend pins are authoritative",
+            )
         }
         // Keep the process in the foreground while any session is live.
         appScope.launch { SessionService.follow(this@VeilApplication, sessions) }

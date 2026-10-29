@@ -39,7 +39,9 @@ import org.json.JSONObject
 
 /** The methods Veil's dev flavor implements. The dev agent adds its own and forwards these. */
 class AppMethods(private val app: VeilApplication) {
-    private val registry get() = app.sessions
+    private val registry
+        get() = app.sessions
+
     private val scenarios = Scenarios(app)
     val table = MethodTable()
 

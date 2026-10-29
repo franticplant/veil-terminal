@@ -9,10 +9,9 @@ import java.io.File
 import java.io.InputStream
 
 /**
- * The native host network broker. The app sends a target over a Unix socket;
- * the broker (a separate no-JVM process) dials TCP and relays bytes. Keeping
- * the dial out of the UI process is what makes VM sessions behave like the
- * native engine process.
+ * The native host network broker. The app sends a target over a Unix socket; the broker (a separate
+ * no-JVM process) dials TCP and relays bytes. Keeping the dial out of the UI process is what makes
+ * VM sessions behave like the native engine process.
  */
 class NetBroker(context: Context, private val dataDir: File) : Closeable {
     private val binary = File(context.applicationInfo.nativeLibraryDir, BINARY)
@@ -21,26 +20,24 @@ class NetBroker(context: Context, private val dataDir: File) : Closeable {
 
     @Synchronized
     private fun start() {
-        process?.takeIf { it.isAlive }?.let { return }
+        process
+            ?.takeIf { it.isAlive }
+            ?.let {
+                return
+            }
         dataDir.mkdirs()
         path.delete()
         val stderr = File(dataDir, "net-broker.stderr")
         process =
-            ProcessBuilder(binary.path, "--net-broker", path.path)
-                .redirectError(stderr)
-                .start()
+            ProcessBuilder(binary.path, "--net-broker", path.path).redirectError(stderr).start()
         for (i in 0 until 100) {
             if (path.exists()) return
             if (process?.isAlive != true) break
             Thread.sleep(20)
         }
-        val detail =
-            runCatching { stderr.readText().takeLast(2_000) }
-                .getOrDefault("no stderr")
+        val detail = runCatching { stderr.readText().takeLast(2_000) }.getOrDefault("no stderr")
         val exit = runCatching { process?.exitValue() }.getOrNull()
-        throw IllegalStateException(
-            "native network broker did not start (exit=$exit): $detail"
-        )
+        throw IllegalStateException("native network broker did not start (exit=$exit): $detail")
     }
 
     /** Opens one relayed TCP connection and returns the app-facing pipe end. */

@@ -10,8 +10,8 @@ import java.nio.file.StandardCopyOption
  *
  * A guest engine cannot read Android app storage, so the Microdroid payload always reports an
  * unknown host key. This store is the Android-side policy: the registry answers a matching pin
- * without a prompt, refuses a changed one, and records a key only after the user chooses
- * "Trust and remember".
+ * without a prompt, refuses a changed one, and records a key only after the user chooses "Trust and
+ * remember".
  *
  * Only the algorithm and SHA-256 fingerprint are stored. The full public key never needs to enter
  * the VM, and a fingerprint comparison is enough to recognise the key.
@@ -111,20 +111,19 @@ class KnownHostsStore(
     private fun save() {
         file.parentFile?.mkdirs()
         val tmp = File(file.parentFile, "${file.name}.tmp")
-        val text =
-            buildString {
-                appendLine("# Veil frontend host-key pins (algorithm + SHA-256 fingerprint)")
-                for (pin in list()) {
-                    append(pin.host)
-                    append('\t')
-                    append(pin.port)
-                    append('\t')
-                    append(pin.algorithm)
-                    append('\t')
-                    append(pin.fingerprint)
-                    append('\n')
-                }
+        val text = buildString {
+            appendLine("# Veil frontend host-key pins (algorithm + SHA-256 fingerprint)")
+            for (pin in list()) {
+                append(pin.host)
+                append('\t')
+                append(pin.port)
+                append('\t')
+                append(pin.algorithm)
+                append('\t')
+                append(pin.fingerprint)
+                append('\n')
             }
+        }
         tmp.writeText(text)
         try {
             Files.move(
