@@ -8,15 +8,15 @@
 
 use std::fs::File;
 use std::future::Future;
-use std::io;
+use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::pin::Pin;
 use std::ptr::null_mut;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::mpsc;
 use veil_engine::{Dialed, Dialer};
 
 /// A blocking vsock listener handed to the guest engine.
@@ -58,13 +58,12 @@ impl Dialer for BrokeredDialer {
                         "broker opened the wrong endpoint",
                     ));
                 }
-                set_nonblocking(fd)?;
                 Ok(file)
             })
             .await
             .map_err(io::Error::other)??;
             Ok(Dialed {
-                stream: Box::new(Vsock::new(file)?),
+                stream: Box::new(BrokeredStream::new(file)?),
                 peer: None,
             })
         })
@@ -142,95 +141,130 @@ fn read_line(file: &mut File) -> io::Result<String> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "broker header is not UTF-8"))
 }
 
-fn set_nonblocking(fd: i32) -> io::Result<()> {
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+/// A vsock connection driven by two blocking threads.
+///
+/// The guest's broker stream is plain SSH traffic. Reading it through
+/// `AsyncFd` on this kernel worked only in fits: server packets could sit
+/// unread until a client keepalive woke the socket. Two blocking pumps, one
+/// per direction, remove that dependency and mirror the blocking reader and
+/// writer the engine protocol already uses on vsock port 5000.
+struct BrokeredStream {
+    incoming: mpsc::Receiver<io::Result<Vec<u8>>>,
+    buffered: Vec<u8>,
+    offset: usize,
+    outgoing: Option<mpsc::UnboundedSender<Vec<u8>>>,
 }
 
-struct Vsock {
-    fd: AsyncFd<File>,
-}
-
-impl Vsock {
-    // tokio 1.54 deprecates AsyncFd::new in favour of an I/O-safety API that
-    // is not available on the pinned version's Android target yet.
-    #[allow(deprecated)]
+impl BrokeredStream {
     fn new(file: File) -> io::Result<Self> {
-        Ok(Vsock {
-            fd: AsyncFd::new(file)?,
+        let mut read_file = file.try_clone()?;
+        let mut write_file = file;
+        let (in_tx, in_rx) = mpsc::channel(64);
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+        std::thread::Builder::new()
+            .name("veil-vsock-read".into())
+            .spawn(move || {
+                loop {
+                    let mut bytes = vec![0u8; 8192];
+                    match read_file.read(&mut bytes) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            bytes.truncate(n);
+                            if in_tx.blocking_send(Ok(bytes)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = in_tx.blocking_send(Err(e));
+                            break;
+                        }
+                    }
+                }
+            })?;
+
+        std::thread::Builder::new()
+            .name("veil-vsock-write".into())
+            .spawn(move || {
+                while let Some(bytes) = out_rx.blocking_recv() {
+                    if let Err(e) = write_file.write_all(&bytes) {
+                        eprintln!("veil-vm-engine: vsock write failed: {e}");
+                        break;
+                    }
+                    if let Err(e) = write_file.flush() {
+                        eprintln!("veil-vm-engine: vsock flush failed: {e}");
+                        break;
+                    }
+                }
+            })?;
+
+        Ok(BrokeredStream {
+            incoming: in_rx,
+            buffered: Vec::new(),
+            offset: 0,
+            outgoing: Some(out_tx),
         })
     }
+
+    fn copy_buffered(&mut self, buf: &mut ReadBuf<'_>) -> bool {
+        if self.offset >= self.buffered.len() {
+            return false;
+        }
+        let n = (self.buffered.len() - self.offset).min(buf.remaining());
+        buf.put_slice(&self.buffered[self.offset..self.offset + n]);
+        self.offset += n;
+        if self.offset == self.buffered.len() {
+            self.buffered.clear();
+            self.offset = 0;
+        }
+        true
+    }
 }
 
-impl AsyncRead for Vsock {
+impl AsyncRead for BrokeredStream {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let mut guard = match self.fd.poll_read_ready(cx) {
-            Poll::Ready(Ok(g)) => g,
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-            Poll::Pending => return Poll::Pending,
-        };
-        let unfilled = buf.initialize_unfilled();
-        match guard.try_io(|inner| {
-            let n = unsafe {
-                libc::read(
-                    inner.get_ref().as_raw_fd(),
-                    unfilled.as_mut_ptr().cast(),
-                    unfilled.len(),
-                )
-            };
-            if n < 0 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(n as usize)
-            }
-        }) {
-            Ok(Ok(n)) => {
-                buf.advance(n);
+        let this = self.get_mut();
+        if this.copy_buffered(buf) || buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        match this.incoming.poll_recv(cx) {
+            Poll::Ready(Some(Ok(bytes))) => {
+                this.buffered = bytes;
+                this.offset = 0;
+                this.copy_buffered(buf);
                 Poll::Ready(Ok(()))
             }
-            Ok(Err(e)) => Poll::Ready(Err(e)),
-            Err(_) => Poll::Pending,
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Err(e)),
+            Poll::Ready(None) => Poll::Ready(Ok(())),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
 
-impl AsyncWrite for Vsock {
+impl AsyncWrite for BrokeredStream {
     fn poll_write(
         self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
+        _cx: &mut Context<'_>,
         data: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let mut guard = match self.fd.poll_write_ready(cx) {
-            Poll::Ready(Ok(g)) => g,
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-            Poll::Pending => return Poll::Pending,
+        let this = self.get_mut();
+        let Some(outgoing) = this.outgoing.as_ref() else {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "vsock write side is closed",
+            )));
         };
-        match guard.try_io(|inner| {
-            let n = unsafe {
-                libc::write(
-                    inner.get_ref().as_raw_fd(),
-                    data.as_ptr().cast(),
-                    data.len(),
-                )
-            };
-            if n < 0 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(n as usize)
-            }
-        }) {
-            Ok(result) => Poll::Ready(result),
-            Err(_) => Poll::Pending,
+        let len = data.len();
+        match outgoing.send(data.to_vec()) {
+            Ok(()) => Poll::Ready(Ok(len)),
+            Err(_) => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "vsock writer stopped",
+            ))),
         }
     }
 
@@ -239,8 +273,7 @@ impl AsyncWrite for Vsock {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let fd = self.fd.get_ref().as_raw_fd();
-        unsafe { libc::shutdown(fd, libc::SHUT_WR) };
+        self.get_mut().outgoing.take();
         Poll::Ready(Ok(()))
     }
 }
