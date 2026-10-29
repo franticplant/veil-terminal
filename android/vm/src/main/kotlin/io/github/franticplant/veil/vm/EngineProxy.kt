@@ -140,6 +140,9 @@ class EngineProxy(private val context: Context) {
         }
     }
 
+    /** True while at least one broker relay is active. */
+    fun hasActiveConnections(): Boolean = activeConnections.isNotEmpty()
+
     fun stats(): JSONObject {
         val status = runCatching { File("/proc/self/status").readLines() }.getOrDefault(emptyList())
         var rssKb = 0L

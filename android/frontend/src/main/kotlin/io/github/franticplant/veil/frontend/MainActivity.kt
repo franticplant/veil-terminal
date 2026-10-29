@@ -1598,7 +1598,7 @@ private fun SettingsDialog(prefs: UiPrefs, onDismiss: () -> Unit) {
                     }
                 }
                 Text(
-                    "Applies to the next VM start. Lower values need testing; 128 MiB is the current default.",
+                    "Applies at the next Veil start. Lower values need testing; 128 MiB is the current default.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Text("Keys", style = MaterialTheme.typography.labelLarge)

@@ -33,6 +33,11 @@ class VmHostService : Service() {
             ): Array<ParcelFileDescriptor> =
                 synchronized(this@VmHostService) {
                     engine?.let {
+                        if (it.hasActiveConnections()) {
+                            throw IllegalStateException(
+                                "the VM engine still has active sessions"
+                            )
+                        }
                         it.stop()
                         engine = null
                     }
