@@ -10,7 +10,6 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONObject
 
@@ -116,9 +115,11 @@ class EngineProxy(private val context: Context) {
                     try {
                         tcpIn.copyTo(toGuest)
                     } finally {
-                        runCatching { toGuest.close() }
-                        runCatching { tcpIn.close() }
-                        relay.finished()
+                        // Either direction ending means the SSH connection is
+                        // finished. Close the other direction too: waiting for
+                        // both leaves a relay and its descriptors behind when
+                        // one side only half-closes.
+                        relay.close()
                     }
                 }
                 .apply { isDaemon = true }
@@ -127,9 +128,7 @@ class EngineProxy(private val context: Context) {
                     try {
                         fromGuest.copyTo(tcpOut)
                     } finally {
-                        runCatching { fromGuest.close() }
-                        runCatching { tcpOut.close() }
-                        relay.finished()
+                        relay.close()
                     }
                 }
                 .apply { isDaemon = true }
@@ -138,6 +137,11 @@ class EngineProxy(private val context: Context) {
             relay.close()
             throw e
         }
+    }
+
+    /** Closes one relay after its session ends; a no-op if it already finished. */
+    fun closeDial(connectionId: Long) {
+        relays.firstOrNull { it.connectionId == connectionId }?.close()
     }
 
     /** True while at least one broker relay is active. */
@@ -195,22 +199,12 @@ class EngineProxy(private val context: Context) {
         private val tcpOut: Closeable,
         private val onDone: (Relay) -> Unit,
     ) : Closeable {
-        private val remaining = AtomicInteger(2)
         private val closed = AtomicBoolean(false)
-        private val removed = AtomicBoolean(false)
-
-        fun finished() {
-            if (remaining.decrementAndGet() == 0) remove()
-        }
 
         override fun close() {
             if (!closed.compareAndSet(false, true)) return
             listOf(toGuest, fromGuest, tcpIn, tcpOut).forEach { runCatching { it.close() } }
-            remove()
-        }
-
-        private fun remove() {
-            if (removed.compareAndSet(false, true)) onDone(this)
+            onDone(this)
         }
     }
 

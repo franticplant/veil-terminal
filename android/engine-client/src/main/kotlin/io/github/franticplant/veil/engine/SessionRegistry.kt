@@ -322,25 +322,30 @@ class SessionRegistry(
 
     private suspend fun openOnce(target: Target, cols: Int, rows: Int): Session {
         val c = connection()
-        backend.prepare(target.host, target.port)
+        val connectionId = backend.prepare(target.host, target.port)
         val reply =
-            c.request(
-                ClientMsg.newBuilder()
-                    .setOpenSession(
-                        OpenSession.newBuilder()
-                            .setHost(target.host)
-                            .setPort(target.port)
-                            .setUsername(target.username)
-                            .setSize(TermSize.newBuilder().setCols(cols).setRows(rows))
-                            .addAllPublicKeys(publicKeysFor(target))
-                            .setAllowClassicalKex(
-                                target.allowClassicalKex || !policy().requirePostQuantum
-                            )
-                    )
-            )
+            try {
+                c.request(
+                    ClientMsg.newBuilder()
+                        .setOpenSession(
+                            OpenSession.newBuilder()
+                                .setHost(target.host)
+                                .setPort(target.port)
+                                .setUsername(target.username)
+                                .setSize(TermSize.newBuilder().setCols(cols).setRows(rows))
+                                .addAllPublicKeys(publicKeysFor(target))
+                                .setAllowClassicalKex(
+                                    target.allowClassicalKex || !policy().requirePostQuantum
+                                )
+                        )
+                )
+            } catch (e: Exception) {
+                releaseConnection(connectionId)
+                throw e
+            }
         val id = reply.expect(EngineMsg.BodyCase.SESSION_OPENED).sessionOpened.sessionId
         log.info("session", "opened ${target.displayName} (${cols}x$rows)", id)
-        val session = Session(id, target, c, this)
+        val session = Session(id, target, c, this, connectionId)
         if (target.startup.isNotBlank()) {
             scope.launch {
                 val st =
@@ -428,6 +433,12 @@ class SessionRegistry(
     internal fun launch(block: suspend CoroutineScope.() -> Unit) {
         scope.launch(block = block)
     }
+
+    /** Releases a backend connection after its session has closed. */
+    internal fun releaseConnection(connectionId: Long?) {
+        if (connectionId == null) return
+        scope.launch { runCatching { backend.closeConnection(connectionId) } }
+    }
 }
 
 /**
@@ -500,6 +511,7 @@ internal constructor(
     val target: Target,
     private val conn: EngineConnection,
     private val registry: SessionRegistry,
+    private val connectionId: Long? = null,
 ) {
     private val _status = MutableStateFlow(SessionStatus(SessionPhase.SESSION_PHASE_CONNECTING))
     private val _prompt = MutableStateFlow<Prompt?>(null)
@@ -664,8 +676,10 @@ internal constructor(
         }
         _status.value = SessionStatus(phase, detail, security ?: _status.value.security)
         // Requests already queued still go out; nothing new is accepted.
-        if (phase == SessionPhase.SESSION_PHASE_CLOSED) outbox.close()
-        if (phase == SessionPhase.SESSION_PHASE_CLOSED) _prompt.value = null
+        if (phase == SessionPhase.SESSION_PHASE_CLOSED) {
+            outbox.close()
+            _prompt.value = null
+        }
     }
 
     internal fun onPrompt(p: Prompt) {

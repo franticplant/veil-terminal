@@ -8,8 +8,10 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
+import android.os.RemoteException
 import android.util.Log
 import io.github.franticplant.veil.vm.api.IVmHost
+import org.json.JSONObject
 
 /**
  * The only control surface of the VM host package. devd binds it after checking the signature-level
@@ -18,6 +20,9 @@ import io.github.franticplant.veil.vm.api.IVmHost
  */
 class VmHostService : Service() {
     private var engine: EngineProxy? = null
+    private var clientToken: IBinder? = null
+    private var clientDeath: IBinder.DeathRecipient? = null
+    @Volatile private var foreground = false
 
     private val binder =
         object : IVmHost.Stub() {
@@ -30,6 +35,7 @@ class VmHostService : Service() {
                 protectedVm: Boolean,
                 memoryMiB: Int,
                 diagnostics: Boolean,
+                client: IBinder,
             ): Array<ParcelFileDescriptor> =
                 synchronized(this@VmHostService) {
                     engine?.let {
@@ -41,6 +47,7 @@ class VmHostService : Service() {
                         it.stop()
                         engine = null
                     }
+                    linkClient(client)
                     val proxy = EngineProxy(this@VmHostService)
                     val pfds =
                         proxy.start(
@@ -64,20 +71,25 @@ class VmHostService : Service() {
                 }
             }
 
+            override fun closeDial(connectionId: Long) {
+                synchronized(this@VmHostService) {
+                    engine?.closeDial(connectionId)
+                }
+            }
+
             override fun stopEngine() {
                 synchronized(this@VmHostService) {
-                    engine?.let {
-                        it.stop()
-                        engine = null
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
-                    }
+                    stopEngineInternal()
                 }
             }
 
             override fun engineLog(): String = VmEngine.logText()
 
-            override fun stats(): String = engine?.stats()?.toString() ?: "{}"
+            override fun stats(): String {
+                val base = runCatching { JSONObject(engine?.stats()?.toString() ?: "{}") }
+                    .getOrDefault(JSONObject())
+                return base.put("foreground", foreground).toString()
+            }
         }
 
     override fun onBind(intent: Intent?): IBinder {
@@ -110,8 +122,49 @@ class VmHostService : Service() {
                 notification,
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
             )
+            foreground = true
         }
-            .onFailure { Log.w(TAG, "could not enter the foreground: ${it.message}") }
+            .onFailure {
+                foreground = false
+                Log.w(TAG, "could not enter the foreground: ${it.message}")
+            }
+    }
+
+    private fun linkClient(client: IBinder) {
+        unlinkClient()
+        val death =
+            IBinder.DeathRecipient {
+                synchronized(this) {
+                    Log.i(TAG, "client died; stopping the VM")
+                    stopEngineInternal()
+                }
+            }
+        try {
+            client.linkToDeath(death, 0)
+            clientToken = client
+            clientDeath = death
+        } catch (_: RemoteException) {
+            // The caller died before the engine could start.
+            stopEngineInternal()
+        }
+    }
+
+    private fun unlinkClient() {
+        clientDeath?.let { death ->
+            runCatching { clientToken?.unlinkToDeath(death, 0) }
+        }
+        clientDeath = null
+        clientToken = null
+    }
+
+    private fun stopEngineInternal() {
+        engine?.let {
+            it.stop()
+            engine = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+        unlinkClient()
     }
 
     override fun onDestroy() {
@@ -120,6 +173,7 @@ class VmHostService : Service() {
                 it.stop()
                 engine = null
             }
+            unlinkClient()
         }
         super.onDestroy()
     }

@@ -18,10 +18,18 @@ interface IVmHost {
      * Boots the fixed engine payload and returns two pipe ends: [0] writes to
      * the VM, [1] reads from it. The VM host proxies them to vsock.
      */
-    ParcelFileDescriptor[] startEngine(boolean protectedVm, int memoryMiB, boolean diagnostics);
+    ParcelFileDescriptor[] startEngine(
+        boolean protectedVm,
+        int memoryMiB,
+        boolean diagnostics,
+        in IBinder client
+    );
 
     /** Relays an already-connected TCP socket to the guest broker. */
     void dial(String host, int port, in ParcelFileDescriptor tcp, long connectionId);
+
+    /** Closes one relay after its session ends. */
+    void closeDial(long connectionId);
 
     /** Stops the VM started by startEngine. */
     void stopEngine();

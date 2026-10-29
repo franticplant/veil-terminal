@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.os.Binder
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import io.github.franticplant.veil.vm.api.IVmHost
@@ -35,10 +36,11 @@ class VmBackend(
 
     private val netBroker by lazy { NetBroker(context, dataDir) }
     private val nextConnection = java.util.concurrent.atomic.AtomicLong(1)
+    private val clientToken = Binder()
 
     @Volatile private var active: IVmHost? = null
 
-    override suspend fun prepare(host: String, port: Int) =
+    override suspend fun prepare(host: String, port: Int): Long =
         withContext(Dispatchers.IO) {
             val vmHost =
                 active
@@ -65,6 +67,12 @@ class VmBackend(
                     e,
                 )
             }
+            connectionId
+        }
+
+    override suspend fun closeConnection(connectionId: Long) =
+        withContext(Dispatchers.IO) {
+            active?.let { runCatching { it.closeDial(connectionId) } }
             Unit
         }
 
@@ -159,7 +167,7 @@ class VmBackend(
             }
             failure?.let { throw IllegalStateException(it) }
             val host = remote ?: throw IllegalStateException("no VM host binder")
-            val pfds = host.startEngine(protectedVm, memoryMiB, diagnostics)
+            val pfds = host.startEngine(protectedVm, memoryMiB, diagnostics, clientToken)
             active = host
             keep = true
             return Handle(context, connection, host, pfds) {

@@ -20,7 +20,10 @@ interface EngineBackend {
      * Prepares the network path for a session before OpenSession. Native and local backends dial
      * directly and do nothing; the VM backend asks its host broker to open the guest's vsock side.
      */
-    suspend fun prepare(host: String, port: Int) {}
+    suspend fun prepare(host: String, port: Int): Long? = null
+
+    /** Releases a connection prepared by [prepare], once its session is gone. */
+    suspend fun closeConnection(connectionId: Long) {}
 
     /** Optional host-side counters, for backends that have a separate supervising process. */
     suspend fun hostStats(): org.json.JSONObject? = null
