@@ -4,6 +4,8 @@ import android.content.Context
 import android.os.ParcelFileDescriptor
 import java.io.Closeable
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Bridges the VM's vsock stream to two ordinary pipes. Binder carries the app-facing pipe ends; the
@@ -18,7 +20,7 @@ class EngineProxy(private val context: Context) {
     private var toVm: ParcelFileDescriptor? = null
     private var fromVm: ParcelFileDescriptor? = null
     private var handle: VmEngine.Handle? = null
-    private val relays = CopyOnWriteArrayList<Closeable>()
+    private val relays = CopyOnWriteArrayList<Relay>()
 
     /** Returns [write-to-VM, read-from-VM]. */
     fun start(protectedVm: Boolean): Array<ParcelFileDescriptor> {
@@ -64,27 +66,43 @@ class EngineProxy(private val context: Context) {
         VmEngine.note("broker vsock connected")
         val toGuest = ParcelFileDescriptor.AutoCloseOutputStream(pfd.dup())
         val fromGuest = ParcelFileDescriptor.AutoCloseInputStream(pfd)
-        toGuest.write("$host\n$port\n".toByteArray())
-        toGuest.flush()
-        VmEngine.note("broker header sent")
         val tcpIn = ParcelFileDescriptor.AutoCloseInputStream(tcp)
         val tcpOut = ParcelFileDescriptor.AutoCloseOutputStream(tcp.dup())
-        Thread {
-            runCatching { tcpIn.copyTo(toGuest) }
-            runCatching { toGuest.close() }
+        val relay =
+            Relay(toGuest, fromGuest, tcpIn, tcpOut) {
+                relays.remove(it)
+            }
+        relays.add(relay)
+        try {
+            toGuest.write("$host\n$port\n".toByteArray())
+            toGuest.flush()
+            VmEngine.note("broker header sent")
+            Thread {
+                    try {
+                        tcpIn.copyTo(toGuest)
+                    } finally {
+                        runCatching { toGuest.close() }
+                        runCatching { tcpIn.close() }
+                        relay.finished()
+                    }
+                }
+                .apply { isDaemon = true }
+                .also { it.start() }
+            Thread {
+                    try {
+                        fromGuest.copyTo(tcpOut)
+                    } finally {
+                        runCatching { fromGuest.close() }
+                        runCatching { tcpOut.close() }
+                        relay.finished()
+                    }
+                }
+                .apply { isDaemon = true }
+                .also { it.start() }
+        } catch (e: Exception) {
+            relay.close()
+            throw e
         }
-            .apply { isDaemon = true }
-            .also { it.start() }
-        Thread {
-            runCatching { fromGuest.copyTo(tcpOut) }
-            runCatching { fromGuest.close() }
-        }
-            .apply { isDaemon = true }
-            .also { it.start() }
-        relays.add(toGuest)
-        relays.add(fromGuest)
-        relays.add(tcpIn)
-        relays.add(tcpOut)
     }
 
     fun stop() {
@@ -96,6 +114,33 @@ class EngineProxy(private val context: Context) {
         fromVm = null
         handle?.let { VmEngine.stop(it) }
         handle = null
+    }
+
+    /** One broker relay: two directions, removed once both have finished or it is stopped. */
+    private class Relay(
+        private val toGuest: Closeable,
+        private val fromGuest: Closeable,
+        private val tcpIn: Closeable,
+        private val tcpOut: Closeable,
+        private val onDone: (Relay) -> Unit,
+    ) : Closeable {
+        private val remaining = AtomicInteger(2)
+        private val closed = AtomicBoolean(false)
+        private val removed = AtomicBoolean(false)
+
+        fun finished() {
+            if (remaining.decrementAndGet() == 0) remove()
+        }
+
+        override fun close() {
+            if (!closed.compareAndSet(false, true)) return
+            listOf(toGuest, fromGuest, tcpIn, tcpOut).forEach { runCatching { it.close() } }
+            remove()
+        }
+
+        private fun remove() {
+            if (removed.compareAndSet(false, true)) onDone(this)
+        }
     }
 
     private fun bridge(

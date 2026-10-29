@@ -19,26 +19,29 @@ import kotlinx.coroutines.withContext
  * returns the connected vsock stream; this backend wraps it in the same [StreamPipe] the native
  * process uses.
  *
- * If the VM package is missing, not granted, or fails to boot, the native process backend is used
- * instead. VM mode is an optimization/hardening mode, not a new engine.
+ * VM is the primary backend. If the package is missing, not granted, or fails to boot, this backend
+ * reports the failure; it does not silently switch to native. The user can select the native
+ * backend explicitly (for comparison or recovery).
  */
 class VmBackend(
     private val context: Context,
-    private val engineVersion: String,
     private val dataDir: File,
     private val protectedVm: Boolean = true,
     private val log: LogRing? = null,
 ) : EngineBackend {
     override val kind = "vm"
 
-    private val fallback = HostBackend(context, engineVersion, dataDir)
     private val netBroker by lazy { NetBroker(context, dataDir) }
 
     @Volatile private var active: IVmHost? = null
 
     override suspend fun prepare(host: String, port: Int) =
         withContext(Dispatchers.IO) {
-            val vmHost = active ?: return@withContext
+            val vmHost =
+                active
+                    ?: throw VmUnavailableException(
+                        "the VM engine is not running; reopen the session or select the native engine"
+                    )
             log?.info("vm", "broker prepare $host:$port")
             try {
                 val pfd = netBroker.dial(host, port)
@@ -58,6 +61,7 @@ class VmBackend(
                     e,
                 )
             }
+            Unit
         }
 
     override suspend fun connect(clientName: String, scope: CoroutineScope): EngineConnection =
@@ -68,9 +72,12 @@ class VmBackend(
                 } catch (e: Exception) {
                     log?.warn(
                         "vm",
-                        "VM unavailable (${e.javaClass.name}: ${e.message}); falling back to the native engine",
+                        "VM unavailable (${e.javaClass.name}: ${e.message}); not falling back",
                     )
-                    return@withContext fallback.connect(clientName, scope)
+                    throw VmUnavailableException(
+                        "the VM engine could not start: ${e.message}; retry, or select the native engine",
+                        e,
+                    )
                 }
             try {
                 val input = ParcelFileDescriptor.AutoCloseInputStream(handle.pfds[1])
@@ -81,9 +88,12 @@ class VmBackend(
                 handle.close()
                 log?.warn(
                     "vm",
-                    "VM pipe failed (${e.javaClass.name}: ${e.message}); falling back to the native engine",
+                    "VM pipe failed (${e.javaClass.name}: ${e.message}); not falling back",
                 )
-                fallback.connect(clientName, scope)
+                throw VmUnavailableException(
+                    "the VM engine stream failed: ${e.message}; retry, or select the native engine",
+                    e,
+                )
             }
         }
 
@@ -153,3 +163,7 @@ class VmBackend(
         private const val VM_HOST_SERVICE = "io.github.franticplant.veil.vm.VmHostService"
     }
 }
+
+/** VM was explicitly selected and could not be used; the user chooses whether to retry or go native. */
+class VmUnavailableException(message: String, cause: Throwable? = null) :
+    IllegalStateException(message, cause)
