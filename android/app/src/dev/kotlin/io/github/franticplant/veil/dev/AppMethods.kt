@@ -372,7 +372,13 @@ class AppMethods(private val app: VeilApplication) {
             Json.prompt(pr)
         }
 
-        table.add(method("hostkeys.list", Scope.READ, "The engine's known_hosts entries.")) {
+        table.add(
+            method(
+                "hostkeys.list",
+                Scope.READ,
+                "Trusted host keys: the engine's known_hosts and the frontend's VM pins.",
+            )
+        ) {
             JSONArray().apply {
                 for (k in engine { registry.hostKeys() }) {
                     put(

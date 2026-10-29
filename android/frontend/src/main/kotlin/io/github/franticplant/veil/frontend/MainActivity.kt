@@ -1755,7 +1755,7 @@ private fun KeysDialog(keys: SshKeys, unlockedDefault: Boolean, onDismiss: () ->
     }
 }
 
-/** The engine's known_hosts: what is trusted, and forgetting a key that legitimately changed. */
+/** Trusted host keys (engine known_hosts plus frontend VM pins); forget one here. */
 @Composable
 private fun KnownHostsDialog(host: EngineHost, onDismiss: () -> Unit) {
     var entries by remember {

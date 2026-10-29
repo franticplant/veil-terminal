@@ -15,6 +15,7 @@ import io.github.franticplant.veil.engine.proto.HostKeyAnswer
 import io.github.franticplant.veil.engine.proto.HostKeyDecision
 import io.github.franticplant.veil.engine.proto.HostKeyEntry
 import io.github.franticplant.veil.engine.proto.HostKeyPrompt
+import io.github.franticplant.veil.engine.proto.HostKeyStatus
 import io.github.franticplant.veil.engine.proto.Input
 import io.github.franticplant.veil.engine.proto.ListHostKeys
 import io.github.franticplant.veil.engine.proto.LogBatch
@@ -70,6 +71,11 @@ class SessionRegistry(
     internal val log: LogRing = LogRing(),
     /** Signs logins for sessions with a key; null: keys are not offered. */
     private val signer: LoginSigner? = null,
+    /**
+     * Host-key pins held by the frontend. The VM payload cannot read Android storage, so it asks
+     * for every host key; this store answers known pins and records new ones on "remember".
+     */
+    private val knownHosts: KnownHostsStore? = null,
     /** The user's defaults, read at each use (they can change in settings). */
     private val policy: () -> SessionPolicy = { SessionPolicy() },
 ) {
@@ -143,21 +149,118 @@ class SessionRegistry(
             .expect(EngineMsg.BodyCase.LOG_BATCH)
             .logBatch
 
-    suspend fun hostKeys(): List<HostKeyEntry> =
-        connection()
-            .request(ClientMsg.newBuilder().setListHostKeys(ListHostKeys.getDefaultInstance()))
-            .expect(EngineMsg.BodyCase.HOST_KEY_LIST)
-            .hostKeyList
-            .entriesList
+    /**
+     * Keys recorded by the engine plus pins remembered by the frontend. The two lists can overlap
+     * when native mode's known_hosts and the VM's frontend pins both hold a key.
+     */
+    suspend fun hostKeys(): List<HostKeyEntry> {
+        val engineEntries =
+            try {
+                // Do not boot a VM just to open the known-hosts screen. Native backends have no
+                // such cost, and listing their file is useful before the first session.
+                val connection = currentConnection ?: if (backend.kind == "vm") null else connection()
+                connection
+                    ?.request(
+                        ClientMsg.newBuilder().setListHostKeys(ListHostKeys.getDefaultInstance())
+                    )
+                    ?.expect(EngineMsg.BodyCase.HOST_KEY_LIST)
+                    ?.hostKeyList
+                    ?.entriesList
+                    .orEmpty()
+            } catch (e: Exception) {
+                log.warn("hostkeys", "could not list engine host keys: ${e.message}")
+                emptyList()
+            }
+        val frontend =
+            knownHosts?.list().orEmpty().map {
+                HostKeyEntry.newBuilder()
+                    .setHost(it.host)
+                    .setPort(it.port)
+                    .setAlgorithm(it.algorithm)
+                    .setFingerprint(it.fingerprint)
+                    .build()
+            }
+        return (engineEntries + frontend).distinctBy {
+            listOf(it.host, it.port, it.algorithm, it.fingerprint)
+        }
+    }
 
     suspend fun forgetHostKey(host: String, port: Int) {
-        connection()
-            .request(
-                ClientMsg.newBuilder()
-                    .setForgetHostKey(ForgetHostKey.newBuilder().setHost(host).setPort(port))
-            )
-            .expect(EngineMsg.BodyCase.ACK)
+        knownHosts?.forget(host, port)
+        try {
+            val connection = currentConnection ?: if (backend.kind == "vm") null else connection()
+            connection
+                ?.request(
+                    ClientMsg.newBuilder()
+                        .setForgetHostKey(ForgetHostKey.newBuilder().setHost(host).setPort(port))
+                )
+                ?.expect(EngineMsg.BodyCase.ACK)
+        } catch (e: Exception) {
+            log.warn("hostkeys", "forgot the frontend pin but not the engine key: ${e.message}")
+        }
         log.info("hostkeys", "forgot the key of $host:$port")
+    }
+
+    /**
+     * A host-key prompt from the engine. A pin the frontend already holds is answered without a
+     * dialog; a different key for the same host is refused, exactly as OpenSSH refuses a changed
+     * key. Only an unknown host reaches the UI.
+     */
+    private fun answerFromPins(session: Session, prompt: HostKeyPrompt) {
+        val store = knownHosts
+        if (store == null || prompt.status != HostKeyStatus.HOST_KEY_STATUS_UNKNOWN) {
+            session.onPrompt(Prompt.HostKey(prompt))
+            return
+        }
+        when (val check = store.check(prompt.host, prompt.port, prompt.algorithm, prompt.fingerprint)) {
+            is KnownHostsStore.Check.Known -> {
+                log.info(
+                    "hostkeys",
+                    "known ${prompt.algorithm} ${prompt.fingerprint} for ${prompt.host}:${prompt.port}",
+                    session.id,
+                )
+                session.sendHostKeyAnswer(prompt, HostKeyDecision.HOST_KEY_DECISION_ACCEPT_ONCE)
+            }
+            is KnownHostsStore.Check.Changed -> {
+                log.warn(
+                    "hostkeys",
+                    "HOST KEY CHANGED for ${prompt.host}:${prompt.port}: recorded ${check.pin.algorithm} " +
+                        "${check.pin.fingerprint}, server presented ${prompt.algorithm} " +
+                        "${prompt.fingerprint}; refusing. Forget it in Known hosts only if you know " +
+                        "why it changed.",
+                    session.id,
+                )
+                session.sendHostKeyAnswer(prompt, HostKeyDecision.HOST_KEY_DECISION_REJECT)
+            }
+            KnownHostsStore.Check.Unknown -> session.onPrompt(Prompt.HostKey(prompt))
+        }
+    }
+
+    /** Applies "remember" locally before forwarding the decision to the engine. */
+    internal fun answerHostKey(
+        session: Session,
+        prompt: HostKeyPrompt,
+        decision: HostKeyDecision,
+    ) {
+        if (decision == HostKeyDecision.HOST_KEY_DECISION_ACCEPT_AND_REMEMBER) {
+            knownHosts?.let {
+                try {
+                    it.remember(
+                        prompt.host,
+                        prompt.port,
+                        prompt.algorithm,
+                        prompt.fingerprint,
+                    )
+                } catch (e: Exception) {
+                    log.warn(
+                        "hostkeys",
+                        "could not remember ${prompt.host}:${prompt.port}: ${e.message}",
+                        session.id,
+                    )
+                }
+            }
+        }
+        session.sendHostKeyAnswer(prompt, decision)
     }
 
     /** The session with [id], if this registry knows it. */
@@ -298,8 +401,13 @@ class SessionRegistry(
                     msg.sessionState.detail,
                     if (msg.sessionState.hasSecurity()) msg.sessionState.security else null,
                 )
-            EngineMsg.BodyCase.HOST_KEY_PROMPT ->
-                byId[msg.hostKeyPrompt.sessionId]?.onPrompt(Prompt.HostKey(msg.hostKeyPrompt))
+            EngineMsg.BodyCase.HOST_KEY_PROMPT -> {
+                val prompt = msg.hostKeyPrompt
+                val session = byId[prompt.sessionId]
+                if (session != null) {
+                    answerFromPins(session, prompt)
+                }
+            }
             EngineMsg.BodyCase.AUTH_PROMPT ->
                 byId[msg.authPrompt.sessionId]?.onPrompt(Prompt.Auth(msg.authPrompt))
             EngineMsg.BodyCase.FRAME -> byId[msg.frame.sessionId]?.onFrame(msg.frame)
@@ -454,6 +562,11 @@ internal constructor(
     }
 
     fun answerHostKey(prompt: HostKeyPrompt, decision: HostKeyDecision) {
+        registry.answerHostKey(this, prompt, decision)
+    }
+
+    /** Sends the final decision; [answerHostKey] applies the frontend pin first. */
+    internal fun sendHostKeyAnswer(prompt: HostKeyPrompt, decision: HostKeyDecision) {
         _prompt.compareAndSet(Prompt.HostKey(prompt), null)
         send(
             ClientMsg.newBuilder()

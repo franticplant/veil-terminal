@@ -3,6 +3,7 @@ package io.github.franticplant.veil
 import android.app.Application
 import io.github.franticplant.veil.engine.EngineBackend
 import io.github.franticplant.veil.engine.HostBackend
+import io.github.franticplant.veil.engine.KnownHostsStore
 import io.github.franticplant.veil.engine.LocalBackend
 import io.github.franticplant.veil.engine.LogRing
 import io.github.franticplant.veil.engine.ProcessBackend
@@ -41,13 +42,17 @@ class VeilApplication : Application(), EngineHost {
      * the same protocol from the same engine state directory. Changing it applies at the next
      * start.
      */
+    private val engineDir by lazy { File(filesDir, "engine") }
+
     private val backend: EngineBackend by lazy {
-        val dir = File(filesDir, "engine")
         when (uiPrefs.values.value.engine) {
-            UiPrefs.EnginePlace.NATIVE -> HostBackend(this, BuildConfig.VERSION_NAME, dir)
-            UiPrefs.EnginePlace.SERVICE -> ProcessBackend(this, BuildConfig.VERSION_NAME, dir)
-            UiPrefs.EnginePlace.LOCAL -> LocalBackend(BuildConfig.VERSION_NAME, dir)
-            UiPrefs.EnginePlace.VM -> VmBackend(this, BuildConfig.VERSION_NAME, dir, log = log)
+            UiPrefs.EnginePlace.NATIVE ->
+                HostBackend(this, BuildConfig.VERSION_NAME, engineDir)
+            UiPrefs.EnginePlace.SERVICE ->
+                ProcessBackend(this, BuildConfig.VERSION_NAME, engineDir)
+            UiPrefs.EnginePlace.LOCAL -> LocalBackend(BuildConfig.VERSION_NAME, engineDir)
+            UiPrefs.EnginePlace.VM ->
+                VmBackend(this, BuildConfig.VERSION_NAME, engineDir, log = log)
         }
     }
 
@@ -62,8 +67,16 @@ class VeilApplication : Application(), EngineHost {
 
     override val sshKeys: SshKeys by lazy { SshKeys(log) }
 
+    /**
+     * Host-key pins live on the Android side, so they keep working in VM mode where the guest
+     * cannot read app storage.
+     */
+    private val knownHosts by lazy {
+        KnownHostsStore(File(engineDir, "known_hosts.frontend"), log)
+    }
+
     override val sessions: SessionRegistry by lazy {
-        SessionRegistry(backend, appScope, log, sshKeys) {
+        SessionRegistry(backend, appScope, log, sshKeys, knownHosts) {
             uiPrefs.values.value.let {
                 io.github.franticplant.veil.engine.SessionPolicy(
                     it.requirePostQuantum,
