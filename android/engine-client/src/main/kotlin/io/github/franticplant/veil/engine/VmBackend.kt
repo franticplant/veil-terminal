@@ -8,7 +8,6 @@ import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import io.github.franticplant.veil.vm.api.IVmHost
 import java.io.File
-import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
@@ -36,7 +35,6 @@ class VmBackend(
     private val netBroker by lazy { NetBroker(context, dataDir) }
 
     @Volatile private var active: IVmHost? = null
-    private val brokerPfds = CopyOnWriteArrayList<ParcelFileDescriptor>()
 
     override suspend fun prepare(host: String, port: Int) =
         withContext(Dispatchers.IO) {
@@ -44,8 +42,14 @@ class VmBackend(
             log?.info("vm", "broker prepare $host:$port")
             try {
                 val pfd = netBroker.dial(host, port)
-                vmHost.dial(host, port, pfd)
-                brokerPfds.add(pfd)
+                try {
+                    // Binder duplicates the fd for the VM service. The app's
+                    // copy is done as soon as the call returns; keeping it
+                    // would leak one descriptor per session.
+                    vmHost.dial(host, port, pfd)
+                } finally {
+                    runCatching { pfd.close() }
+                }
                 log?.info("vm", "broker ready $host:$port")
             } catch (e: Exception) {
                 log?.warn("vm", "broker failed $host:$port: ${e.message}")
@@ -118,8 +122,6 @@ class VmBackend(
             keep = true
             return Handle(context, connection, host, pfds) {
                 active = null
-                brokerPfds.forEach { runCatching { it.close() } }
-                brokerPfds.clear()
                 runCatching { netBroker.close() }
             }
         } finally {

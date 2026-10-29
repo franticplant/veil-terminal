@@ -7,7 +7,6 @@ import android.os.ParcelFileDescriptor
 import java.io.Closeable
 import java.io.File
 import java.io.InputStream
-import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * The native host network broker. The app sends a target over a Unix socket;
@@ -18,7 +17,6 @@ import java.util.concurrent.CopyOnWriteArrayList
 class NetBroker(context: Context, private val dataDir: File) : Closeable {
     private val binary = File(context.applicationInfo.nativeLibraryDir, BINARY)
     private val path = File(dataDir, "net-broker.sock")
-    private val sockets = CopyOnWriteArrayList<LocalSocket>()
     private var process: Process? = null
 
     @Synchronized
@@ -56,7 +54,11 @@ class NetBroker(context: Context, private val dataDir: File) : Closeable {
             val ack = readLine(socket.inputStream)
             if (ack != "OK") throw IllegalStateException("network broker: $ack")
             val pfd = ParcelFileDescriptor.dup(socket.fileDescriptor)
-            sockets.add(socket)
+            // The fd is duplicated for the relay and for the VM service's
+            // Binder transaction. Keeping this LocalSocket open would also
+            // keep the native broker's upload thread (and its TCP socket)
+            // alive after the session ends.
+            socket.close()
             return pfd
         } catch (e: Exception) {
             runCatching { socket.close() }
@@ -65,8 +67,6 @@ class NetBroker(context: Context, private val dataDir: File) : Closeable {
     }
 
     override fun close() {
-        sockets.forEach { runCatching { it.close() } }
-        sockets.clear()
         process?.destroy()
         process = null
     }
