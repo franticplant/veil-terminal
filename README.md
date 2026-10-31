@@ -1,7 +1,8 @@
 # Veil Terminal
 
-An Android SSH workstation built around nested compartments that separate access and authority. In
-VM mode, remote-facing SSH and terminal code runs in a protected Microdroid guest; the main app
+An Android SSH workstation built around nested security boundaries: separate Android packages, a
+protected Microdroid VM, and the access and authority boundaries inside it. In VM mode, remote-facing
+SSH and terminal code runs in a protected Microdroid guest; the main app
 retains network dialing, host-key policy and Keystore signing. Each SSH-key signature requires strong
 biometric authorization, and SSH private keys never enter the guest. A separate `.vm` Android
 package hosts the VM with AVF permissions but no `INTERNET` or SSH keys. The native engine remains an
