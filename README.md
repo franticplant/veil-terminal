@@ -1,29 +1,49 @@
 # Veil Terminal
 
-An Android SSH workstation built around compartments. Remote-facing SSH and terminal code runs in a
-protected Microdroid VM; the UI, Keystore signing, host-key policy and network broker stay in the
-main app. The VM host is a separate Android package with AVF permissions and no `INTERNET`. The
-native process engine remains an explicit fallback, never a silent substitution.
+An Android SSH workstation built around nested compartments that separate access and authority. In
+VM mode, remote-facing SSH and terminal code runs in a protected Microdroid guest; the main app
+retains network dialing, host-key policy and Keystore signing. Each SSH-key signature requires strong
+biometric authorization, and SSH private keys never enter the guest. A separate `.vm` Android
+package hosts the VM with AVF permissions but no `INTERNET` or SSH keys. The native engine remains an
+explicit fallback, never a silent substitution.
 
-The current stable VM release is `v0.1.0`, validated on a Pixel 8 running GrapheneOS.
+Inside that same VM, the experimental **Workers** layout narrows each session worker's access to its
+own control/data channels. A supervisor owns session admission, connection leases and frame
+validation, rejecting cross-session messages and treating worker output as untrusted; a separate
+guest broker handles the host network relay, and a dedicated spawner creates one short-lived worker
+per SSH session. Workers receive neither vsock listeners nor other sessions' descriptors. These are
+protocol-enforced authority and capability boundaries — who may dial, own a lease, sign, or emit
+frames for a session — plus deliberately limited descriptor grants, not merely crash containment.
+They are not kernel-enforced tenant isolation: all Workers processes share the
+guest UID (6000 on the tested build) and one SELinux domain, so same-UID signals and denial of
+service remain possible. In `v0.1.0`, **Monolith** is the stable default; **Workers** is selectable
+and experimental.
+
+The current stable release is `v0.1.0`, validated on a Pixel 8 running GrapheneOS.
 
 ```mermaid
 flowchart LR
   Remote[(SSH server)]
 
-  subgraph Main["Main APK · io.github.franticplant.veil"]
+  subgraph Main["Main APK · network, pins, signing authority"]
     UI["UI / SessionRegistry"]
-    Keys["Keystore keys<br/>StrongBox / TEE"]
+    Keys["Keystore SSH keys<br/>biometric per signature"]
     Pins["Host-key pins"]
     Broker["Native network broker"]
   end
 
-  subgraph VMHost[".vm APK · io.github.franticplant.veil.vm"]
+  subgraph VMHost[".vm APK · AVF · no INTERNET or SSH keys"]
     Host["VmHostService / EngineProxy"]
   end
 
-  subgraph Guest["Protected Microdroid guest"]
-    Engine["Rust SSH engine<br/>terminal + broker relay"]
+  subgraph Guest["Protected Microdroid VM"]
+    Engine["Monolith<br/>stable default · one process"]
+    subgraph Workers["Workers · experimental · same UID/domain"]
+      Sup["supervisor<br/>admission · leases · frame gate"]
+      GuestBroker["guest broker<br/>host relay · vsock 5001"]
+      Spawner["spawner<br/>one worker per session"]
+      Worker["session worker<br/>own control/data channels"]
+    end
   end
 
   subgraph Dev["devd APK · development only"]
@@ -32,15 +52,23 @@ flowchart LR
 
   UI -->|engine protocol| Host
   Host <-->|vsock 5000| Engine
+  Host -.->|vsock 5000 when Workers selected| Sup
+  Host <-->|vsock 5001| Engine
+  Host -.->|vsock 5001 when Workers selected| GuestBroker
+  GuestBroker -->|connection lease + stream| Sup
+  Sup -->|session-scoped control/data| Worker
+  Sup -->|spawn request| Spawner
+  Spawner -->|fork| Worker
   UI --> Keys
   UI --> Pins
   Engine -.->|SignRequest| UI
   Broker -->|TCP| Remote
   Broker -->|connected fd| Host
-  Host <-->|vsock 5001| Engine
   Devd -.->|typed Binder| UI
   Devd -.->|VM probe and status| Host
 ```
+
+Guest-internal gates restrict protocol access; they do not provide per-role UID isolation.
 
 Today the main app still holds `INTERNET` and the SSH signing authority. The planned `.net` package
 will own networking and `.vault` will own key use; neither is part of this release.
@@ -52,8 +80,10 @@ will own networking and `.vault` will own key use; neither is part of this relea
   each signature. The engine never sees a private key.
 - Optional SSH bastion / jump host profiles. The first TCP stream goes to the bastion and the
   worker opens a direct-tcpip channel to the final target.
-- Experimental Workers layout: supervisor, separate broker process, spawner, and one short-lived
-  worker process per session. Monolith remains the default and stable layout.
+- Experimental **Workers** layout: session-scoped channels and supervisor-enforced admission, lease
+  matching and frame validation limit each worker's authority inside one VM. Processes share the
+  guest UID and SELinux domain; this is not kernel-enforced tenant isolation. **Monolith** remains
+  the stable default.
 - Post-quantum hybrid key exchange (`mlkem768x25519-sha256`) by default, with classical only for
   explicitly allowed hosts.
 - Host keys are pinned by the app for both native and VM sessions; a changed key is refused.
@@ -86,7 +116,9 @@ the main APK. `devd` and the dev APK are development tools and are not required 
 | `core/caps` | `Dialer`, `HostKeyStore` capability traits |
 | `core/obs` | Log rings, counters, process metrics |
 | `guest/engine-host` | Engine on a stream; the native host and the VM payload's core |
-| `guest/vm-engine` | Microdroid payload and guest broker |
+| `guest/vm-engine` | Microdroid Monolith payload and guest broker |
+| `guest/vm-engine-workers` | Experimental same-VM supervisor, broker, spawner and per-session workers |
+| `guest/vm-probe` | Dev-only Microdroid capability and tenant probe |
 | `android/app` | Main APK: UI, session coordination, Keystore signer, host-key pins |
 | `android/vm` | `.vm` APK: AVF host, VM lifecycle, relay, VM metrics |
 | `android/engine-client` | Kotlin engine protocol, backends, native broker |
@@ -118,6 +150,8 @@ gh attestation verify <file> -R franticplant/veil-terminal
 ```
 
 More: [component layout](docs/design/0001-component-layout.md),
+[guest decomposition and its security limits](docs/design/0005-guest-decomposition.md),
+[threat models](docs/security/0001-threat-models.md),
 [development control](docs/dev-control.md),
 [release notes](docs/release-notes/v0.1.0.md).
 

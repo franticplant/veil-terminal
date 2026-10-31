@@ -1,7 +1,8 @@
 # Decomposing the Microdroid guest
 
 Status: investigation 2026-10-30. This is a plan and a record of what the
-guest actually permits. It does not change the 0.1.0 engine payload.
+guest actually permits. It shaped the experimental Workers layout in
+`v0.1.0`; the stable default remains the Monolith payload.
 
 The question is not "which Rust modules can be separate?" but "which
 boundaries does Microdroid enforce?" The answer is narrower than a normal
@@ -9,7 +10,7 @@ Linux process split.
 
 ## What the guest actually is
 
-The payload is one process started by `microdroid_manager` through
+The payload starts as one process, launched by `microdroid_manager` through
 `/system/bin/microdroid_launcher`. The manager:
 
 - runs the launcher with the Microdroid payload UID/GID;
@@ -17,9 +18,11 @@ The payload is one process started by `microdroid_manager` through
 - gives the payload a single SELinux domain, `microdroid_app`;
 - does not install a shell or a service manager for the payload.
 
-The engine payload currently does everything in that one process: engine
-protocol, SSH transport, terminal parser, host-key/sign bridge, and the
-vsock broker. The broker is the only component that accepts a second vsock
+The stable Monolith payload does everything in one process: engine protocol,
+SSH transport, terminal parser, host-key/sign bridge, and the vsock broker.
+The experimental Workers layout forks a supervisor, a separate broker
+process, a single-threaded spawner and per-session workers inside the same
+guest. The broker remains the only component that accepts a second vsock
 port.
 
 ## Probe evidence
@@ -79,16 +82,21 @@ deliberately permissive. The tenant route is the production candidate.
 
 ## What this means
 
-### Process split is containment; credential separation needs a privileged launcher
+### Process split narrows access; credential separation needs launcher support
 
-Forked workers give useful containment:
+Forked workers provide access confinement through deliberately limited
+descriptors and supervisor-enforced protocol gates, alongside address-space
+separation and crash containment:
 
 - separate address spaces;
 - crash containment;
 - per-session lifetime and cleanup;
 - separate file-descriptor tables;
-- no keys, no network, no listener (only the session stream FD);
-- `PR_SET_DUMPABLE=0`, rlimits, and a supervisor-owned frame gate;
+- no SSH private keys, no network-dialing authority, no listener (only the
+  session control/data FDs);
+- supervisor-owned session admission, connection-lease matching and frame
+  validation;
+- `PR_SET_DUMPABLE=0` and rlimits;
 - measurable per-worker RSS (reported by the worker, because `/proc` is
   hidden).
 
@@ -102,11 +110,13 @@ They do **not**, with the current app payload, give:
   namespaces require capabilities);
 - protection from a compromised worker sending signals to its siblings.
 
-A compromised worker can still signal the supervisor or another worker. That
-is the same-UID DoS residual, not a reason to skip the split. It is still
-meaningful containment: the worker cannot read another session's memory, use
-another session's FD, sign, open a network connection, or emit an unchecked
-frame.
+A compromised worker can still signal the supervisor or sibling workers. Its
+supplied descriptors cover only its own session; the supervisor rejects
+cross-session messages and leases and validates frames before forwarding
+them. SSH private keys and final signing authority remain on Android. These
+mechanisms restrict access through the intended interfaces, but do not
+establish distinct kernel security principals or eliminate same-UID denial of
+service.
 
 ### If we can control the launcher, we can separate UIDs in one VM
 
@@ -243,10 +253,13 @@ Settings → Engine → VM layout
 
 `VmBackend` sends the layout string to the VM host. The host selects the
 matching payload or orchestration; a missing backend fails explicitly, never
-as a silent native fallback. The stable release remains monolith until the
-worker/tenant gates pass.
+as a silent native fallback. In `v0.1.0`, Monolith is the stable default,
+Workers is selectable as experimental, and Tenants is not shipped.
 
 ## Combined target: tenants for roles, forks for sessions
+
+This is the target layout, not the `v0.1.0` default. The shipped Workers
+layout is same-UID and does not provide these tenant boundaries.
 
 The validated tenant result makes the target layout a hybrid:
 
@@ -282,8 +295,8 @@ creation.
 ### Same-UID worker layout (implemented, experimental)
 
 If tenant packages are not acceptable or unavailable, the same process layout
-without distinct UIDs is still useful. The `workers` payload uses a pre-forked
-spawner:
+without distinct UIDs still narrows access and contains crashes. The `workers`
+payload uses a pre-forked spawner:
 
 ```
 Host app ── vsock 5000 ──► supervisor
@@ -320,13 +333,13 @@ remains only for a zero/legacy lease.
 | Component | Split? | Why |
 |---|---|---|
 | Supervisor: protocol, sessions, frame validation, prompt/sign routing | Keep one | Small trusted authority; must not parse SSH or terminal bytes. |
-| Broker: vsock 5001, endpoint routing, relay | Separate process | Network-facing relay bugs should not take down the supervisor. |
-| SSH transport + VT parser | One worker per session initially | Best crash containment per unit of memory; both are hostile parsers. |
+| Broker: vsock 5001, endpoint routing, relay | Separate process | Owns the guest relay listener; workers receive only supervisor-relayed session streams. Also contains relay crashes. |
+| SSH transport + VT parser | One worker per session initially | Restricts supplied channels to one session; separates parser address spaces and lifetimes. |
 | VT parser separately | Optional second split | Crash containment only; no seccomp/UID/domain separation. Do it only if measurements justify another process. |
 | Signing bridge | Supervisor | No key material; forwards requests to Android. |
 | Host-key policy | Android/frontend | Canonical for native and VM; guest only asks. |
 | Logs/metrics | Per worker, merged by supervisor | Not a security boundary. |
-| Frame gate | Supervisor | Validate every VT frame before it reaches the app. |
+| Frame gate | Supervisor | Validate every VT frame before it reaches the app; worker output is untrusted and cross-session frames are dropped. |
 
 ### IPC and authority
 
@@ -413,8 +426,10 @@ this Microdroid configuration.
 
 ## Review conclusions
 
-The target is sound as **role isolation plus per-session crash
-containment**, not as strong isolation between sessions.
+The tenant target is sound as **role isolation plus per-session crash
+containment**, not as strong isolation between sessions. The shipped same-UID
+Workers layout goes no further than session-scoped protocol and descriptor
+access control plus crash containment.
 
 Three risks need explicit treatment:
 

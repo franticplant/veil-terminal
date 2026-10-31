@@ -1,7 +1,7 @@
 # Component layout: today, with the VM
 
-Status: describes the code as of 2026-10-29, after the first protected-VM
-release candidate (`v0.1.0-rc.1`). The target architecture is in
+Status: describes the code as of 2026-10-31, after the first stable protected-VM
+release (`v0.1.0`). The target architecture is in
 [0000](0000-bootstrap-proposal.md), sections 3 to 4.
 
 The rule this layout follows: every boundary that will one day cross a
@@ -21,7 +21,8 @@ itself does not change.
 | `core/obs` | Log ring, counters | Engine | Every component, exposed over its protocol |
 | `core/caps` | `Dialer`, `HostKeyStore` (traits) | Engine; frontend pins are the host-key authority | Traits in the guest; the implementations are Android brokers |
 | `guest/engine-host` | `serve()`: one engine on one stream | Shipped in the APK as `libveil_engine_host.so`, run by `HostBackend` over stdio | The Microdroid payload's core (vsock) |
-| `guest/vm-engine` | Microdroid payload: engine protocol on 5000 and host broker on 5001 | `.vm` APK payload | The protected guest; the experimental workers payload moves the broker to its own same-UID process |
+| `guest/vm-engine` | Microdroid payload: engine protocol on 5000 and host broker on 5001 | `.vm` APK payload | The protected guest; this is the stable Monolith layout |
+| `guest/vm-engine-workers` | Experimental same-VM layout: supervisor, broker process, spawner and per-session workers | `.vm` APK payload | The protected guest; session-scoped channels and supervisor-enforced authority gates, with the same UID/domain |
 | `android/jni` | Byte pipe into the engine | App process (the "in app" and "service" backends) | Local fallback only |
 | `android/engine-client` | `EngineConnection`, `SessionRegistry`, `ScreenModel`, `LoginSigner`, `NativePipe`, `StreamPipe`, `VmBackend`, `NetBroker`, backends | App | App: coordinator and broker |
 | `android/vm` | AVF host, `VmHostService`, `EngineProxy`, VM metrics/logs; no `INTERNET` | `.vm` APK | `.vm` APK |
@@ -72,18 +73,25 @@ itself does not change.
    are native processes or VMs for that reason.
 2. **Brokered network.** Implement `Dialer` over a request to the app (or
    the Network Broker), which returns a connected stream.
-3. **The VM. Done for the first release candidate.** The `<base>.vm`
-   package boots a Microdroid payload running `serve()` on vsock 5000; the
-   app's `VmBackend` gets the vsock fd from AVF. A separate host broker
-   relays network streams over vsock 5001. `.vm` has AVF permissions, no
-   `INTERNET` and no keys.
-4. **Guest roles.** Split the engine into SSH and VT workers. The cut is
-   between `core/engine` (SSH) and `core/term` (terminal state), joined by
-   the same kind of framed stream. The first VM release still runs the
-   engine as one guest payload. The Microdroid probe in
+3. **The VM. Shipped in `v0.1.0`.** The `<base>.vm` package boots a
+   Microdroid payload running `serve()` on vsock 5000; the app's `VmBackend`
+   gets the vsock fd from AVF. A separate host broker relays network streams
+   over vsock 5001. `.vm` has AVF permissions, no `INTERNET` and no keys.
+4. **Guest roles. In progress.** The experimental Workers layout in
+   `v0.1.0` splits the guest into a supervisor, a separate broker process, a
+   single-threaded spawner, and one worker per SSH session. These process
+   compartments restrict descriptor access and enforce session authority
+   through supervisor-validated messages; they also contain crashes. All
+   roles currently share UID 6000 and one SELinux domain, so the split does
+   not provide kernel-enforced tenant isolation, and same-UID signals/DoS
+   remain possible. Monolith is the stable default; Workers is experimental.
+   Separate-UID tenants remain experimental and are not shipped; separate VMs
+   provide the stronger isolation boundary. The longer-term cut is between
+   `core/engine` (SSH) and `core/term` (terminal state), joined by the same
+   kind of framed stream. The Microdroid probe in
    [0005](0005-guest-decomposition.md) narrows this: the app payload cannot
-   exec, use seccomp/namespaces/cgroups, or change UID. A fork split is
-   therefore containment, not full authority isolation. If a privileged
+   exec, use seccomp/namespaces/cgroups, or change UID. A fork split therefore
+   narrows access, but is not full authority isolation. If a privileged
    launcher is available, UID/capability separation inside one VM is
    possible through a privileged launcher or Android 17's built-in tenants;
    on a stock app-only build neither is available automatically, and separate
