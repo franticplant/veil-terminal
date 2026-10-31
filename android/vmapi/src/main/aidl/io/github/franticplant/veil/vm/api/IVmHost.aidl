@@ -39,4 +39,26 @@ interface IVmHost {
 
     /** VM host process and active relay counters, as JSON. */
     String stats();
+
+    /**
+     * Runs a newline-separated diagnostic script in the fixed probe payload and
+     * leaves that VM running. The payload is a development tool, not the
+     * engine; it has no keys and no network.
+     */
+    String probeShell(boolean protectedVm, String commands);
+
+    /** Stops the persistent probe VM started by probeShell. */
+    String probeStop();
+
+    /**
+     * Boots the engine with an explicit guest layout ("monolith", "workers",
+     * or "tenants"). Existing startEngine() keeps the monolith layout.
+     */
+    ParcelFileDescriptor[] startEngineWithLayout(
+        boolean protectedVm,
+        int memoryMiB,
+        boolean diagnostics,
+        String layout,
+        in IBinder client
+    );
 }

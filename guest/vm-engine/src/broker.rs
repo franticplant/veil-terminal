@@ -19,14 +19,16 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, oneshot};
 use veil_engine::{Dialed, Dialer};
+use veil_obs::LogRing;
 
-type Endpoint = (String, u16);
+type Endpoint = (String, u16, u64);
 
 #[derive(Default)]
 struct BrokerState {
-    /// Accepts that arrived before the guest engine asked for them.
+    /// Accepts that arrived before the guest engine asked for them. The last
+    /// component is the frontend's connection lease; zero is legacy/ambient.
     ready: HashMap<Endpoint, VecDeque<File>>,
-    /// Engine dials waiting for the host connection with this endpoint.
+    /// Engine dials waiting for the host connection with this endpoint/lease.
     waiting: HashMap<Endpoint, VecDeque<oneshot::Sender<File>>>,
 }
 
@@ -36,55 +38,62 @@ struct BrokerState {
 /// endpoint instead of letting independent dial tasks race on accept(2).
 pub struct BrokeredDialer {
     state: Arc<Mutex<BrokerState>>,
+    log: Option<Arc<LogRing>>,
 }
 
 impl BrokeredDialer {
+    #[allow(dead_code)] // The monolith uses `new`; the workers payload uses the logging constructor.
     pub fn new(listener: File) -> Self {
+        Self::new_with_log(listener, None)
+    }
+
+    pub fn new_with_log(listener: File, log: Option<Arc<LogRing>>) -> Self {
         let state = Arc::new(Mutex::new(BrokerState::default()));
         let listener = Arc::new(listener);
         let thread_state = state.clone();
+        let thread_log = log.clone();
         std::thread::Builder::new()
             .name("veil-broker-accept".into())
-            .spawn(move || accept_loop(listener, thread_state))
+            .spawn(move || accept_loop(listener, thread_state, thread_log))
             .expect("spawn broker accept thread");
-        BrokeredDialer { state }
+        BrokeredDialer { state, log }
     }
-}
 
-fn accept_loop(listener: Arc<File>, state: Arc<Mutex<BrokerState>>) {
-    loop {
-        let fd = unsafe { libc::accept(listener.as_raw_fd(), null_mut(), null_mut()) };
-        if fd < 0 {
-            eprintln!(
-                "veil-vm-engine: broker accept failed: {}",
-                io::Error::last_os_error()
-            );
-            continue;
+    #[allow(dead_code)] // The workers payload uses this; the monolith does not.
+    /// A broker fed by another process. No listener or accept thread is
+    /// started; the supervisor's broker receiver calls [`ingest`](Self::ingest)
+    /// with each stream received over its private IPC channel.
+    pub fn new_passive(log: Option<Arc<LogRing>>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(BrokerState::default())),
+            log,
         }
-        let mut file = unsafe { File::from_raw_fd(fd) };
-        let host = match read_line(&mut file) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("veil-vm-engine: broker header failed: {e}");
-                continue;
+    }
+
+    #[allow(dead_code)] // The workers payload uses this; the monolith does not.
+    /// Queue one already-accepted stream from the broker process.
+    pub fn ingest(&self, host: String, port: u16, connection_id: u64, file: File) {
+        if let Some(log) = &self.log {
+            log.info(
+                "broker",
+                0,
+                &format!("accepted {host}:{port} lease {connection_id}"),
+            );
+        }
+        let key = (host.clone(), port, connection_id);
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut waiter = st.waiting.get_mut(&key).and_then(|q| q.pop_front());
+        if waiter.is_none() && connection_id == 0 {
+            let fallback = st
+                .waiting
+                .keys()
+                .find(|(h, p, _)| h == &host && *p == port)
+                .cloned();
+            if let Some(fallback) = fallback {
+                waiter = st.waiting.get_mut(&fallback).and_then(|q| q.pop_front());
             }
-        };
-        let port = match read_line(&mut file)
-            .ok()
-            .and_then(|v| v.parse::<u16>().ok())
-        {
-            Some(v) => v,
-            None => {
-                eprintln!("veil-vm-engine: broker port failed");
-                continue;
-            }
-        };
-        eprintln!("veil-vm-engine: broker accepted {host}:{port}");
-        let key = (host, port);
-        let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(queue) = st.waiting.get_mut(&key)
-            && let Some(tx) = queue.pop_front()
-        {
+        }
+        if let Some(tx) = waiter {
             if tx.send(file).is_err() {
                 eprintln!("veil-vm-engine: broker dialer vanished");
             }
@@ -98,28 +107,103 @@ fn accept_loop(listener: Arc<File>, state: Arc<Mutex<BrokerState>>) {
     }
 }
 
-impl Dialer for BrokeredDialer {
-    fn dial<'a>(
+fn accept_loop(listener: Arc<File>, state: Arc<Mutex<BrokerState>>, log: Option<Arc<LogRing>>) {
+    loop {
+        let fd = unsafe { libc::accept(listener.as_raw_fd(), null_mut(), null_mut()) };
+        if fd < 0 {
+            let error = io::Error::last_os_error();
+            if let Some(log) = &log {
+                log.warn("broker", 0, &format!("accept failed: {error}"));
+            }
+            eprintln!("veil-vm-engine: broker accept failed: {error}");
+            continue;
+        }
+        let mut file = unsafe { File::from_raw_fd(fd) };
+        let (host, port, connection_id) = match read_header(&mut file) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("veil-vm-engine: broker header failed: {e}");
+                continue;
+            }
+        };
+        if let Some(log) = &log {
+            log.info(
+                "broker",
+                0,
+                &format!("accepted {host}:{port} lease {connection_id}"),
+            );
+        }
+        eprintln!("veil-vm-engine: broker accepted {host}:{port} lease {connection_id}");
+        let key = (host.clone(), port, connection_id);
+        let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut waiter = st.waiting.get_mut(&key).and_then(|q| q.pop_front());
+        if waiter.is_none() && connection_id == 0 {
+            // Legacy clients that do not send a lease may still use the old
+            // endpoint queue. New clients always send a nonzero lease.
+            let fallback = st
+                .waiting
+                .keys()
+                .find(|(h, p, _)| h == &host && *p == port)
+                .cloned();
+            if let Some(fallback) = fallback {
+                waiter = st.waiting.get_mut(&fallback).and_then(|q| q.pop_front());
+            }
+        }
+        if let Some(tx) = waiter {
+            if tx.send(file).is_err() {
+                eprintln!("veil-vm-engine: broker dialer vanished");
+            }
+        } else {
+            let ready = st.ready.entry(key).or_default();
+            ready.push_back(file);
+            if ready.len() > 16 {
+                ready.pop_front();
+            }
+        }
+    }
+}
+
+impl BrokeredDialer {
+    fn dial_impl<'a>(
         &'a self,
         host: &'a str,
         port: u16,
+        connection_id: u64,
+        exact_lease: bool,
     ) -> Pin<Box<dyn Future<Output = io::Result<Dialed>> + Send + 'a>> {
         let state = self.state.clone();
-        let key = (host.to_string(), port);
+        let log = self.log.clone();
+        let key = (host.to_string(), port, connection_id);
         Box::pin(async move {
-            eprintln!("veil-vm-engine: broker waiting for {host}:{port}");
+            if let Some(log) = &log {
+                log.info(
+                    "broker",
+                    0,
+                    &format!("waiting for {host}:{port} lease {connection_id}"),
+                );
+            }
+            eprintln!("veil-vm-engine: broker waiting for {host}:{port} lease {connection_id}");
             let (tx, rx) = oneshot::channel();
             let ready_file = {
                 let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(queue) = st.ready.get_mut(&key) {
-                    queue.pop_front()
-                } else {
-                    None
+                let mut found = st.ready.get_mut(&key).and_then(|queue| queue.pop_front());
+                if found.is_none() && !exact_lease {
+                    let fallback = st
+                        .ready
+                        .keys()
+                        .find(|(h, p, _)| h == host && *p == port)
+                        .cloned();
+                    if let Some(fallback) = fallback {
+                        found = st
+                            .ready
+                            .get_mut(&fallback)
+                            .and_then(|queue| queue.pop_front());
+                    }
                 }
-                .or_else(|| {
+                if found.is_none() {
                     st.waiting.entry(key.clone()).or_default().push_back(tx);
-                    None
-                })
+                }
+                found
             };
             let file = match ready_file {
                 Some(file) => file,
@@ -127,12 +211,38 @@ impl Dialer for BrokeredDialer {
                     io::Error::new(io::ErrorKind::BrokenPipe, "broker dispatcher stopped")
                 })?,
             };
-            eprintln!("veil-vm-engine: broker accepted {host}:{port}");
+            if let Some(log) = &log {
+                log.info(
+                    "broker",
+                    0,
+                    &format!("handed {host}:{port} lease {connection_id} to a session"),
+                );
+            }
+            eprintln!("veil-vm-engine: broker accepted {host}:{port} lease {connection_id}");
             Ok(Dialed {
                 stream: Box::new(BrokeredStream::new(file)?),
                 peer: None,
             })
         })
+    }
+}
+
+impl Dialer for BrokeredDialer {
+    fn dial<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<Dialed>> + Send + 'a>> {
+        self.dial_impl(host, port, 0, false)
+    }
+
+    fn dial_with_connection<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+        connection_id: u64,
+    ) -> Pin<Box<dyn Future<Output = io::Result<Dialed>> + Send + 'a>> {
+        self.dial_impl(host, port, connection_id, connection_id != 0)
     }
 }
 
@@ -179,6 +289,24 @@ pub fn listen(port: u32) -> io::Result<File> {
         }
         Ok(File::from_raw_fd(fd))
     }
+}
+
+/// Reads the broker handshake. The versioned form is
+/// `veil-broker-v1`, host, port, lease; the legacy form starts with host.
+fn read_header(file: &mut File) -> io::Result<(String, u16, u64)> {
+    let first = read_line(file)?;
+    let (host, port_line) = if first == "veil-broker-v1" {
+        (read_line(file)?, read_line(file)?)
+    } else {
+        (first, read_line(file)?)
+    };
+    let port = port_line
+        .parse::<u16>()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad broker port"))?;
+    let connection_id = read_line(file)?
+        .parse::<u64>()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "bad broker lease"))?;
+    Ok((host, port, connection_id))
 }
 
 fn read_line(file: &mut File) -> io::Result<String> {
@@ -341,5 +469,47 @@ impl AsyncWrite for BrokeredStream {
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.get_mut().outgoing.take();
         Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn lease_routing_never_hands_out_another_sessions_stream() {
+        let dialer = BrokeredDialer::new_passive(None);
+        dialer.ingest(
+            "example.org".into(),
+            22,
+            7,
+            File::open("/dev/null").unwrap(),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let wrong = runtime.block_on(async {
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                dialer.dial_with_connection("example.org", 22, 8),
+            )
+            .await
+        });
+        assert!(
+            wrong.is_err(),
+            "a different lease must not receive the stream"
+        );
+
+        let right = runtime.block_on(async {
+            tokio::time::timeout(
+                Duration::from_millis(500),
+                dialer.dial_with_connection("example.org", 22, 7),
+            )
+            .await
+        });
+        assert!(right.is_ok(), "the matching lease should get its stream");
     }
 }

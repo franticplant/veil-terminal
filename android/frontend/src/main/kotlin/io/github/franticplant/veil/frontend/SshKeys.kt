@@ -1,5 +1,8 @@
 package io.github.franticplant.veil.frontend
 
+import android.hardware.biometrics.BiometricManager
+import android.hardware.biometrics.BiometricPrompt
+import android.os.CancellationSignal
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
@@ -17,6 +20,9 @@ import java.security.Signature
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
 import java.util.Base64
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -26,7 +32,8 @@ import kotlinx.coroutines.flow.StateFlow
  * and only logins ([SshUserauth.check]).
  *
  * This is the v0.x stand-in for the design's Vault: the same [LoginSigner] boundary, implemented in
- * the app's process for now.
+ * the app's process for now. Every new key requires strong-biometric authentication for each
+ * signing operation; the private key never leaves Keystore.
  */
 class SshKeys(private val log: LogRing) : LoginSigner {
     /** Where a key lives. */
@@ -52,6 +59,8 @@ class SshKeys(private val log: LogRing) : LoginSigner {
         val publicKey: String,
         val fingerprint: String,
         val security: Security,
+        /** True only for keys generated with Android's auth-per-use policy. */
+        val authPerUse: Boolean,
     )
 
     private val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -79,6 +88,14 @@ class SshKeys(private val log: LogRing) : LoginSigner {
                             .setDigests(KeyProperties.DIGEST_SHA256)
                             .setIsStrongBoxBacked(sb)
                             .setUnlockedDeviceRequired(whileUnlocked)
+                            .setUserAuthenticationRequired(true)
+                            // Every signing operation needs a fresh strong-biometric
+                            // authorization. This is Keystore policy, not an app check.
+                            .setUserAuthenticationParameters(
+                                0,
+                                KeyProperties.AUTH_BIOMETRIC_STRONG,
+                            )
+                            .setInvalidatedByBiometricEnrollment(true)
                             .build()
                     )
                 }
@@ -132,24 +149,103 @@ class SshKeys(private val log: LogRing) : LoginSigner {
             log.warn("keys", "sign request is not a login for '$user' with '$keyId'; refused")
             return null
         }
+        if (!key.authPerUse) {
+            log.warn(
+                "keys",
+                "key '$keyId' predates per-signature biometric policy; recreate it",
+            )
+            return null
+        }
         val private = ks.getKey(alias(keyId), null) as? PrivateKey ?: return null
+        val signature =
+            try {
+                Signature.getInstance("SHA256withECDSA").apply { initSign(private) }
+            } catch (e: java.security.GeneralSecurityException) {
+                log.warn("keys", "cannot prepare '$keyId' for signing: ${e.message}")
+                return null
+            }
+        val authorized = authorizeSignature(signature, keyId, user, request) ?: return null
         val der =
             try {
-                Signature.getInstance("SHA256withECDSA").run {
-                    initSign(private)
-                    update(request.data.toByteArray())
-                    sign()
-                }
-            } catch (e: java.security.InvalidKeyException) {
-                // Keystore's refusal; for keys created "while unlocked" it means the phone is
-                // locked.
-                log.warn(
-                    "keys",
-                    "Keystore refused to use '$keyId' (is the phone locked?): ${e.message}",
-                )
+                authorized.update(request.data.toByteArray())
+                authorized.sign()
+            } catch (e: java.security.GeneralSecurityException) {
+                log.warn("keys", "Keystore refused to use '$keyId': ${e.message}")
                 return null
             }
         return SshUserauth.ecdsaSignatureBlob(der)
+    }
+
+    /**
+     * Binds a biometric prompt to the exact Signature operation. Authentication succeeds only for
+     * the CryptoObject passed here; the returned Signature is the one that may sign the
+     * already-validated login request.
+     */
+    private fun authorizeSignature(
+        signature: Signature,
+        keyId: String,
+        user: String,
+        request: SignRequest,
+    ): Signature? {
+        val activity = MainActivity.current
+        if (activity == null) {
+            log.warn("keys", "no foreground activity for biometric signing")
+            return null
+        }
+        val latch = CountDownLatch(1)
+        val result = AtomicReference<Signature?>(null)
+        val failure = AtomicReference<String?>(null)
+        val cancellation = CancellationSignal()
+        val callback =
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(
+                    authenticationResult: BiometricPrompt.AuthenticationResult
+                ) {
+                    val authenticated = authenticationResult.cryptoObject?.signature
+                    if (authenticated == null) {
+                        failure.set("biometric result carried no signature")
+                    } else {
+                        result.set(authenticated)
+                    }
+                    latch.countDown()
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    failure.set("biometric error $errorCode: $errString")
+                    latch.countDown()
+                }
+            }
+        activity.runOnUiThread {
+            try {
+                BiometricPrompt.Builder(activity)
+                    .setTitle("Authorize SSH login")
+                    .setSubtitle("$user@${request.host}:${request.port} \u00b7 $keyId")
+                    .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+                    .setNegativeButton("Cancel", activity.mainExecutor) { _, _ ->
+                        failure.set("cancelled")
+                        latch.countDown()
+                    }
+                    .build()
+                    .authenticate(
+                        BiometricPrompt.CryptoObject(signature),
+                        cancellation,
+                        activity.mainExecutor,
+                        callback,
+                    )
+            } catch (e: Exception) {
+                failure.set(e.message ?: e.javaClass.simpleName)
+                latch.countDown()
+            }
+        }
+        if (!latch.await(60, TimeUnit.SECONDS)) {
+            failure.set("biometric prompt timed out")
+            cancellation.cancel()
+        }
+        val authenticated = result.get()
+        if (authenticated == null) {
+            log.warn("keys", "signing refused: ${failure.get() ?: "no authorization"}")
+        }
+        return authenticated
     }
 
     private fun refresh() {
@@ -165,8 +261,25 @@ class SshKeys(private val log: LogRing) : LoginSigner {
                 val pub = ks.getCertificate(a)?.publicKey as? ECPublicKey ?: return@mapNotNull null
                 val blob = SshUserauth.ecdsaP256Blob(pub.w.affineX, pub.w.affineY)
                 val name = a.removePrefix(PREFIX)
-                Key(name, SshUserauth.openssh(blob, "veil-$name"), fingerprint(blob), security(a))
+                Key(
+                    name,
+                    SshUserauth.openssh(blob, "veil-$name"),
+                    fingerprint(blob),
+                    security(a),
+                    authPerUse(a),
+                )
             }
+
+    private fun authPerUse(alias: String): Boolean =
+        try {
+            val key = ks.getKey(alias, null) as PrivateKey
+            val info =
+                KeyFactory.getInstance(key.algorithm, "AndroidKeyStore")
+                    .getKeySpec(key, KeyInfo::class.java)
+            info.isUserAuthenticationRequired
+        } catch (_: Exception) {
+            false
+        }
 
     private fun security(alias: String): Security =
         try {

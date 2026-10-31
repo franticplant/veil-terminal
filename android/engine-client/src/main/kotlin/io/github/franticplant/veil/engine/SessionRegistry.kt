@@ -39,6 +39,12 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /** Where a session connects. Holds no secrets. */
+/** One SSH bastion in front of the final target. */
+data class JumpHost(
+    val host: String,
+    val port: Int = 22,
+)
+
 /** Where a session connects, and with which key ([keyId], empty for none). Holds no secrets. */
 data class Target(
     val host: String,
@@ -52,6 +58,8 @@ data class Target(
     val autoReconnect: Boolean = false,
     /** Accept a classical key exchange from servers without a post-quantum one. */
     val allowClassicalKex: Boolean = false,
+    /** Optional SSH bastion. */
+    val jump: JumpHost? = null,
 ) {
     val displayName: String
         get() = label.ifEmpty { if (port == 22) "$username@$host" else "$username@$host:$port" }
@@ -332,7 +340,8 @@ class SessionRegistry(
 
     private suspend fun openOnceLocked(target: Target, cols: Int, rows: Int): Session {
         val c = connection()
-        val connectionId = backend.prepare(target.host, target.port)
+        val first = target.jump ?: JumpHost(target.host, target.port)
+        val connectionId = backend.prepare(first.host, first.port)
         val reply =
             try {
                 c.request(
@@ -342,6 +351,17 @@ class SessionRegistry(
                                 .setHost(target.host)
                                 .setPort(target.port)
                                 .setUsername(target.username)
+                                .setConnectionId(connectionId ?: 0L)
+                                .apply {
+                                    target.jump?.let { jump ->
+                                        setJump(
+                                            io.github.franticplant.veil.engine.proto.JumpHost
+                                                .newBuilder()
+                                                .setHost(jump.host)
+                                                .setPort(jump.port)
+                                        )
+                                    }
+                                }
                                 .setSize(TermSize.newBuilder().setCols(cols).setRows(rows))
                                 .addAllPublicKeys(publicKeysFor(target))
                                 .setAllowClassicalKex(
@@ -389,6 +409,26 @@ class SessionRegistry(
 
     /** Answers a sign request with the session's key, off the caller's thread. */
     private fun sign(session: Session, req: io.github.franticplant.veil.engine.proto.SignRequest) {
+        // The guest worker supplies these labels. Refuse a request that does not
+        // belong to this session's target, even if a compromised worker lies
+        // about the host, port or user. The signature itself is still checked
+        // against the SSH userauth bytes by the signer.
+        val expectedPorts = buildSet {
+            add(session.target.host to session.target.port)
+            session.target.jump?.let { add(it.host to it.port) }
+        }
+        if (
+            (req.host to req.port.toInt()) !in expectedPorts ||
+                req.username != session.target.username
+        ) {
+            log.warn(
+                "session",
+                "sign request does not match the session target; refused",
+                session.id,
+            )
+            session.answerSign(req, null)
+            return
+        }
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val sig =
                 try {

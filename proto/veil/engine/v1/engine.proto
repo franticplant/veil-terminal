@@ -156,6 +156,19 @@ message OpenSession {
   // Allow a classical (not post-quantum) key exchange with servers that offer
   // no hybrid ML-KEM exchange. Off: such servers are refused.
   bool allow_classical_kex = 6;
+  // The frontend's single-use broker connection lease. It is not an
+  // authorization token by itself; the guest broker must match it to the
+  // stream handed over by the VM host. 0 means no lease (native/local).
+  uint64 connection_id = 7;
+  // Optional single SSH bastion. The first broker stream is dialed to this
+  // host; the worker opens a direct-tcpip channel to the final target.
+  JumpHost jump = 8;
+}
+
+message JumpHost {
+  string host = 1;
+  // 0 means 22.
+  uint32 port = 2;
 }
 
 message SessionOpened {

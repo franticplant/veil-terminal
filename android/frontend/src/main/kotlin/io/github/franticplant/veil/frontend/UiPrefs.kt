@@ -22,6 +22,16 @@ class UiPrefs(context: Context) {
         VM("VM (Microdroid)"),
     }
 
+    /** Which guest layout the Microdroid VM should start. */
+    enum class VmLayout(val id: String, val label: String) {
+        /** Current one-payload engine. */
+        MONOLITH("monolith", "Monolith (stable)"),
+        /** Supervisor + per-session worker processes; needs the workers payload. */
+        WORKERS("workers", "Workers (experimental)"),
+        /** Manager-native tenants; needs role packages. */
+        TENANTS("tenants", "Tenants (experimental)"),
+    }
+
     enum class ClipboardPolicy {
         ASK,
         ALLOW,
@@ -52,6 +62,8 @@ class UiPrefs(context: Context) {
         val engine: EnginePlace = EnginePlace.NATIVE,
         /** Guest RAM for the Microdroid engine (applies at the next start). */
         val vmMemoryMiB: Int = 128,
+        /** Guest layout for the Microdroid engine (applies at the next start). */
+        val vmLayout: VmLayout = VmLayout.MONOLITH,
     )
 
     private val _values =
@@ -76,6 +88,9 @@ class UiPrefs(context: Context) {
                     runCatching { EnginePlace.valueOf(prefs.getString("engine", "NATIVE")!!) }
                         .getOrDefault(EnginePlace.NATIVE),
                 vmMemoryMiB = prefs.getInt("vmMemoryMiB", 128).coerceIn(32, 1024),
+                vmLayout =
+                    runCatching { VmLayout.valueOf(prefs.getString("vmLayout", "MONOLITH")!!) }
+                        .getOrDefault(VmLayout.MONOLITH),
             )
         )
 
@@ -99,6 +114,7 @@ class UiPrefs(context: Context) {
             putBoolean("keysWhileUnlocked", v.keysWhileUnlocked)
             putString("engine", v.engine.name)
             putInt("vmMemoryMiB", v.vmMemoryMiB)
+            putString("vmLayout", v.vmLayout.name)
         }
         _values.value = v
     }

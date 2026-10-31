@@ -57,6 +57,7 @@ class VeilApplication : Application(), EngineHost {
                     engineDir,
                     memoryMiB = uiPrefs.values.value.vmMemoryMiB,
                     diagnostics = BuildConfig.DEV_TOOLS,
+                    layout = uiPrefs.values.value.vmLayout.id,
                     log = log,
                 )
         }

@@ -5,7 +5,7 @@ protected Microdroid VM; the UI, Keystore signing, host-key policy and network b
 main app. The VM host is a separate Android package with AVF permissions and no `INTERNET`. The
 native process engine remains an explicit fallback, never a silent substitution.
 
-The current VM release candidate is `v0.1.0-rc.2`, validated on a Pixel 8 running GrapheneOS.
+The current stable VM release is `v0.1.0`, validated on a Pixel 8 running GrapheneOS.
 
 ```mermaid
 flowchart LR
@@ -48,7 +48,12 @@ will own networking and `.vault` will own key use; neither is part of this relea
 ## What it does
 
 - SSH with password, keyboard-interactive or key login. Keys are ECDSA P-256 in Android Keystore,
-  using StrongBox where available; the engine never sees a private key.
+  using StrongBox by default where available; new keys require strong-biometric authentication for
+  each signature. The engine never sees a private key.
+- Optional SSH bastion / jump host profiles. The first TCP stream goes to the bastion and the
+  worker opens a direct-tcpip channel to the final target.
+- Experimental Workers layout: supervisor, separate broker process, spawner, and one short-lived
+  worker process per session. Monolith remains the default and stable layout.
 - Post-quantum hybrid key exchange (`mlkem768x25519-sha256`) by default, with classical only for
   explicitly allowed hosts.
 - Host keys are pinned by the app for both native and VM sessions; a changed key is refused.
@@ -114,7 +119,7 @@ gh attestation verify <file> -R franticplant/veil-terminal
 
 More: [component layout](docs/design/0001-component-layout.md),
 [development control](docs/dev-control.md),
-[release notes](docs/release-notes/v0.1.0-rc.2.md).
+[release notes](docs/release-notes/v0.1.0.md).
 
 ## License
 

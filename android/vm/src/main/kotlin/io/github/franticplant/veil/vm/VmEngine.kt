@@ -45,6 +45,7 @@ object VmEngine {
         protected: Boolean,
         memoryMiB: Int,
         diagnostics: Boolean,
+        layout: String = "monolith",
     ): Handle =
         synchronized(lock) {
             val managerClass = Class.forName("android.system.virtualmachine.VirtualMachineManager")
@@ -60,7 +61,7 @@ object VmEngine {
                 .invoke(builder, protected)
             builderClass
                 .getMethod("setPayloadBinaryName", String::class.java)
-                .invoke(builder, "libveil_vm_engine.so")
+                .invoke(builder, payloadFor(layout))
             optionalLong(
                 builderClass,
                 builder,
@@ -102,6 +103,14 @@ object VmEngine {
             stop(vmClass, vm)
             delete(managerClass, manager)
             throw IllegalStateException("engine vsock did not appear: ${last?.message}", last)
+        }
+
+    private fun payloadFor(layout: String): String =
+        when (layout) {
+            "monolith" -> "libveil_vm_engine.so"
+            "workers" -> "libveil_vm_engine_workers.so"
+            "tenants" -> "libveil_vm_engine_tenants.so"
+            else -> throw IllegalArgumentException("unknown VM layout: $layout")
         }
 
     private fun drain(vmClass: Class<*>, vm: Any, method: String, label: String) {

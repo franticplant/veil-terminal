@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# Builds Veil on keynest in throwaway rootless containers, then optionally
+# signs and installs on this machine. The signing key never leaves this host.
+#
+#   VEIL_BUILD_HOST=tailmeshbuild@keynest \
+#   VEIL_BUILD_PORT=27015 \
+#   VEIL_BUILD_KEY=$HOME/.ssh/agents-keynest \
+#   scripts/remote-build dev vm-dev
+#
+#   scripts/remote-build --sign vm-dev
+#   scripts/remote-build --sign --install dev vm-dev
+#
+# The remote workspace and caches persist:
+#   $VEIL_BUILD_SRC    default /home/tailmeshbuild/src/veil-terminal
+#   $VEIL_BUILD_CACHE  default /home/tailmeshbuild/cache/veil
+#
+# Only the rootless build account is used. The remote side never receives the
+# keystore or the signing password.
+set -euo pipefail
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+host=${VEIL_BUILD_HOST:-}
+port=${VEIL_BUILD_PORT:-27015}
+key=${VEIL_BUILD_KEY:-$HOME/.ssh/agents-keynest}
+remote_src=${VEIL_BUILD_SRC:-/home/tailmeshbuild/src/veil-terminal}
+remote_cache=${VEIL_BUILD_CACHE:-/home/tailmeshbuild/cache/veil}
+jobs=${VEIL_BUILD_JOBS:-4}
+do_sign=0
+do_install=0
+do_prime=1
+flavors=()
+
+usage() {
+	echo "usage: VEIL_BUILD_HOST=user@host scripts/remote-build [--sign] [--install] [--no-prime] FLAVOR..." >&2
+	echo "flavors: dev prod devd vm vm-dev" >&2
+	exit 2
+}
+
+while [[ $# -gt 0 ]]; do
+	case $1 in
+	--sign) do_sign=1 ;;
+	--install) do_install=1; do_sign=1 ;;
+	--no-prime) do_prime=0 ;;
+	-h | --help) usage ;;
+	-*) usage ;;
+	*) flavors+=("$1") ;;
+	esac
+	shift
+done
+
+[[ -n $host ]] || usage
+[[ ${#flavors[@]} -gt 0 ]] || usage
+[[ -f $key ]] || { echo "SSH key not found: $key" >&2; exit 1; }
+
+ssh_cmd=(ssh -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=10 -p "$port" "$host")
+
+echo "syncing $repo -> $host:$remote_src" >&2
+# Keep .git: scripts/build derives versionCode/versionName from it. Exclude
+# generated trees so the transfer is source-only.
+tar -C "$repo" \
+	--exclude='./android/*/build' \
+	--exclude='./android/build' \
+	--exclude='./target' \
+	--exclude='./dist' \
+	--exclude='./android/.gradle' \
+	--exclude='*/.gradle' \
+	-cf - . |
+	"${ssh_cmd[@]}" "rm -rf '$remote_src' && mkdir -p '$remote_src' && tar -C '$remote_src' -xf -"
+
+if ((do_prime)); then
+	echo "priming remote Cargo cache (notices needs host crates)" >&2
+	"${ssh_cmd[@]}" \
+		"cd '$remote_src' && mkdir -p '$remote_cache' && VEIL_CACHE_DIR='$remote_cache' CARGO_BUILD_JOBS='$jobs' scripts/run cargo fetch --locked"
+fi
+
+for flavor in "${flavors[@]}"; do
+	echo "building $flavor on $host" >&2
+	"${ssh_cmd[@]}" \
+		"cd '$remote_src' && VEIL_CACHE_DIR='$remote_cache' CARGO_BUILD_JOBS='$jobs' scripts/build '$flavor' -- --max-workers='$jobs'"
+done
+
+artifact() {
+	case $1 in
+	dev) echo android/app/build/outputs/apk/dev/release/app-dev-release-unsigned.apk ;;
+	prod) echo android/app/build/outputs/apk/prod/release/app-prod-release-unsigned.apk ;;
+	devd) echo android/devd/build/outputs/apk/release/devd-release-unsigned.apk ;;
+	vm) echo android/vm/build/outputs/apk/release/vm-release-unsigned.apk ;;
+	vm-dev) echo android/vm/build/outputs/apk/dev/vm-dev-unsigned.apk ;;
+	*) echo "unknown flavor: $1" >&2; exit 2 ;;
+	esac
+}
+
+signed_apk() {
+	case $1 in
+	dev) ls -t "$repo"/dist/veil-*.apk 2>/dev/null | grep -v '/veil-vm' | grep -- '-dev\.apk$' | head -1 ;;
+	prod) ls -t "$repo"/dist/veil-*.apk 2>/dev/null | grep -v '/veil-vm' | grep -v -- '-dev\.apk$' | head -1 ;;
+	devd) ls -t "$repo"/dist/veil-devd-*.apk 2>/dev/null | head -1 ;;
+	vm) ls -t "$repo"/dist/veil-vm-*.apk 2>/dev/null | grep -v '/veil-vm-dev-' | head -1 ;;
+	vm-dev) ls -t "$repo"/dist/veil-vm-dev-*.apk 2>/dev/null | head -1 ;;
+	*) return 1 ;;
+	esac
+}
+
+for flavor in "${flavors[@]}"; do
+	path=$(artifact "$flavor")
+	echo "fetching $path" >&2
+	"${ssh_cmd[@]}" "tar -C '$remote_src' -cf - '$path'" |
+		tar -C "$repo" -xf -
+done
+
+if ((do_sign)); then
+	# The signing key is local. Read its password from the private file only
+	# when the caller has not already exported it.
+	props=$HOME/.config/veil/signing.properties
+	if [[ -z ${VEIL_KEYSTORE:-} && -f $props ]]; then
+		VEIL_KEYSTORE=$(sed -n 's/^storeFile=//p' "$props")
+	fi
+	if [[ -z ${VEIL_KEYSTORE_PASSWORD:-} && -f $props ]]; then
+		VEIL_KEYSTORE_PASSWORD=$(sed -n 's/^storePassword=//p' "$props")
+	fi
+	[[ -n ${VEIL_KEYSTORE:-} && -n ${VEIL_KEYSTORE_PASSWORD:-} ]] ||
+		{ echo "set VEIL_KEYSTORE and VEIL_KEYSTORE_PASSWORD, or create $props" >&2; exit 1; }
+	export VEIL_KEYSTORE VEIL_KEYSTORE_PASSWORD
+
+	for flavor in "${flavors[@]}"; do
+		scripts/sign "$flavor"
+	done
+fi
+
+if ((do_install)); then
+	# Dependency order: VM host before the app that binds it, devd last because
+	# installing it restarts the control plane.
+	ordered=()
+	for f in vm vm-dev dev prod devd; do
+		for requested in "${flavors[@]}"; do
+			[[ $requested == "$f" ]] && ordered+=("$f")
+		done
+	done
+	for flavor in "${ordered[@]}"; do
+		apk=$(signed_apk "$flavor") || { echo "no signed APK for $flavor" >&2; exit 1; }
+		echo "installing $apk" >&2
+		veil-ctl update "$apk"
+	done
+fi

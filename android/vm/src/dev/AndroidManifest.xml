@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Dev-only tenant packages. Android 11+ hides installed packages from
+         PackageManager unless they are declared here. The release manifest
+         intentionally does not include the lab packages. -->
+    <queries>
+        <package android:name="io.github.franticplant.veil.worker1" />
+        <package android:name="io.github.franticplant.veil.worker2" />
+    </queries>
+</manifest>

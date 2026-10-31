@@ -45,6 +45,61 @@ pub trait Dialer: Send + Sync + 'static {
         host: &'a str,
         port: u16,
     ) -> Pin<Box<dyn Future<Output = io::Result<Dialed>> + Send + 'a>>;
+
+    /// Dial one brokered connection by its frontend-issued lease. A dialer
+    /// that cannot enforce leases (direct/fixed) ignores the ID; the VM
+    /// broker must match it exactly.
+    fn dial_with_connection<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+        _connection_id: u64,
+    ) -> Pin<Box<dyn Future<Output = io::Result<Dialed>> + Send + 'a>> {
+        self.dial(host, port)
+    }
+}
+
+/// A dialer for a session that already owns its stream.
+///
+/// A supervisor obtains the broker stream, passes its descriptor to a session
+/// worker, and the worker hands it to the engine through this type. The dial
+/// is single-use: a worker must never silently reuse the stream for a second
+/// session.
+pub struct FixedDialer {
+    stream: std::sync::Mutex<Option<Box<dyn Connection>>>,
+    peer: Option<SocketAddr>,
+}
+
+impl FixedDialer {
+    pub fn new(stream: Box<dyn Connection>, peer: Option<SocketAddr>) -> Self {
+        Self {
+            stream: std::sync::Mutex::new(Some(stream)),
+            peer,
+        }
+    }
+}
+
+impl Dialer for FixedDialer {
+    fn dial<'a>(
+        &'a self,
+        _host: &'a str,
+        _port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<Dialed>> + Send + 'a>> {
+        Box::pin(async move {
+            let stream = self
+                .stream
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::AlreadyExists, "session stream already used")
+                })?;
+            Ok(Dialed {
+                stream,
+                peer: self.peer,
+            })
+        })
+    }
 }
 
 /// Connects directly, with a timeout.

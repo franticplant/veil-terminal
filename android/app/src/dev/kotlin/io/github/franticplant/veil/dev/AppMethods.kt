@@ -485,6 +485,8 @@ class AppMethods(private val app: VeilApplication) {
                 str("startup", "Typed once the shell is open (e.g. tmux new -A -s main)."),
                 bool("reconnect", "Reconnect by itself when the connection drops."),
                 bool("allowClassicalKex", "Accept servers without post-quantum key exchange."),
+                str("jumpHost", "Optional SSH bastion host."),
+                int("jumpPort", "Jump host port (default 22).", min = 1, max = 65535),
             )
         ) { p ->
             val target =
@@ -500,7 +502,20 @@ class AppMethods(private val app: VeilApplication) {
                                 "give either profile, or host and user",
                             )
                         }
-                        Target(p.string("host"), p.intOr("port", 22), p.string("user"))
+                        Target(
+                            p.string("host"),
+                            p.intOr("port", 22),
+                            p.string("user"),
+                            jump =
+                                p.stringOr("jumpHost", "")
+                                    .takeIf { it.isNotBlank() }
+                                    ?.let {
+                                        io.github.franticplant.veil.engine.JumpHost(
+                                            it,
+                                            p.intOr("jumpPort", 22),
+                                        )
+                                    },
+                        )
                     }
                     .let { if (p.has("key")) it.copy(keyId = p.string("key")) else it }
                     .let { if (p.has("startup")) it.copy(startup = p.string("startup")) else it }
@@ -737,6 +752,8 @@ class AppMethods(private val app: VeilApplication) {
                 int("port", "Port (default 22).", min = 1, max = 65535),
                 str("user", "User name.", required = true),
                 str("key", "A key name (keys.list) to try before passwords."),
+                str("jumpHost", "Optional SSH bastion host."),
+                int("jumpPort", "Jump host port (default 22).", min = 1, max = 65535),
             )
         ) { p ->
             val label = p.string("label")
@@ -747,6 +764,15 @@ class AppMethods(private val app: VeilApplication) {
                     p.string("user"),
                     label,
                     p.stringOr("key", ""),
+                    jump =
+                        p.stringOr("jumpHost", "")
+                            .takeIf { it.isNotBlank() }
+                            ?.let {
+                                io.github.franticplant.veil.engine.JumpHost(
+                                    it,
+                                    p.intOr("jumpPort", 22),
+                                )
+                            },
                 )
             app.profiles.save(app.profiles.all.value.firstOrNull { it.label == label }, t)
             Json.target(t)
@@ -778,6 +804,7 @@ class AppMethods(private val app: VeilApplication) {
                 .put("publicKey", k.publicKey)
                 .put("fingerprint", k.fingerprint)
                 .put("security", k.security.name.lowercase())
+                .put("authPerUse", k.authPerUse)
 
         table.add(
             method(
@@ -815,7 +842,14 @@ class AppMethods(private val app: VeilApplication) {
                         "tee" -> SshKeys.Where.TEE
                         "auto" -> SshKeys.Where.AUTO
                         else ->
-                            if (p.boolOr("strongBox", true)) SshKeys.Where.AUTO
+                            if (p.boolOr("strongBox", true))
+                                if (
+                                    app.packageManager.hasSystemFeature(
+                                        android.content.pm.PackageManager.FEATURE_STRONGBOX_KEYSTORE
+                                    )
+                                )
+                                    SshKeys.Where.STRONGBOX
+                                else SshKeys.Where.TEE
                             else SshKeys.Where.TEE
                     }
                 json(
@@ -954,6 +988,7 @@ class AppMethods(private val app: VeilApplication) {
                 .put("keysWhileUnlocked", v.keysWhileUnlocked)
                 .put("engine", v.engine.name.lowercase())
                 .put("vmMemoryMiB", v.vmMemoryMiB)
+                .put("vmLayout", v.vmLayout.id)
 
         table.add(method("settings.get", Scope.READ, "The app's settings.")) {
             json(app.uiPrefs.values.value)
@@ -997,6 +1032,11 @@ class AppMethods(private val app: VeilApplication) {
                     min = 32,
                     max = 1024,
                 ),
+                str(
+                    "vmLayout",
+                    "Microdroid guest layout (next start): monolith, workers, or tenants.",
+                    choices = listOf("monolith", "workers", "tenants"),
+                ),
             )
         ) { p ->
             app.uiPrefs.update { v ->
@@ -1025,6 +1065,12 @@ class AppMethods(private val app: VeilApplication) {
                             )
                         else v.engine,
                     vmMemoryMiB = p.intOr("vmMemoryMiB", v.vmMemoryMiB).coerceIn(32, 1024),
+                    vmLayout =
+                        if (p.has("vmLayout"))
+                            io.github.franticplant.veil.frontend.UiPrefs.VmLayout.entries.first {
+                                it.id == p.string("vmLayout")
+                            }
+                        else v.vmLayout,
                 )
             }
             json(app.uiPrefs.values.value)

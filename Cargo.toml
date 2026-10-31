@@ -10,6 +10,7 @@ members = [
     "guest/engine-host",
     "guest/vm-probe",
     "guest/vm-engine",
+    "guest/vm-engine-workers",
     "android/jni",
     "android/devd-native",
     "dev/ctl",

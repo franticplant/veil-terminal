@@ -339,6 +339,37 @@ class DevdMethods(private val app: DevdApp) {
 
         table.add(
             method(
+                "vm.shell",
+                Scope.OPERATE,
+                "Runs a newline-separated diagnostic script in the fixed probe VM and keeps it " +
+                    "running. Dev VM builds only; the payload has no keys and no network.",
+                true,
+                bool("protected", "Use a protected VM (default true)."),
+                str(
+                    "commands",
+                    "Commands such as env, ps, exec, seccomp, cgroup, binder. Required.",
+                ),
+            )
+        ) { p ->
+            vmHost.shell(
+                p.boolOr("protected", true),
+                p.string("commands"),
+            )
+        }
+
+        table.add(
+            method(
+                "vm.probeStop",
+                Scope.LIFECYCLE,
+                "Stops the persistent probe VM started by vm.shell.",
+                true,
+            )
+        ) {
+            vmHost.probeStop()
+        }
+
+        table.add(
+            method(
                 "vm.stop",
                 Scope.LIFECYCLE,
                 "Stops the VM started by engine mode.",

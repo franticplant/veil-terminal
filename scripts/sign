@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
 # Signs a built APK with the Veil key.
 #
-#   scripts/sign dev|prod|devd|vm
+#   scripts/sign dev|prod|devd|vm|vm-dev
 #       Signs android/app/build/outputs/apk/<flavor>/release/...-unsigned.apk
 #       (devd: android/devd/build/outputs/apk/release/devd-release-unsigned.apk;
-#        vm: android/vm/build/outputs/apk/release/vm-release-unsigned.apk) in
+#        vm: android/vm/build/outputs/apk/release/vm-release-unsigned.apk;
+#        vm-dev: android/vm/build/outputs/apk/dev/vm-dev-unsigned.apk) in
 #       a network-less container (in CI, with VEIL_HOST_TOOLCHAIN=1, on the runner). Needs VEIL_KEYSTORE (path to the PKCS12
 #       keystore, alias "veil") and VEIL_KEYSTORE_PASSWORD in the environment;
 #       CI sets both from the "release" environment's secrets.
 #
-#   scripts/sign --finish dev|prod|devd|vm DIR [VIA]
+#   scripts/sign --finish dev|prod|devd|vm|vm-dev DIR [VIA]
 #       For signing set-ups outside this repo: DIR holds the output of
 #       scripts/lib/sign-apk.sh (signed.apk, .idsig, .certs, .badging); this
 #       does the remaining steps. VIA is recorded in the log.
 #
 # Then: checks the signer against the pinned digest in
 # dev/signing/veil-release-cert.sha256, writes dist/veil-<versionName>.apk
-# (devd: dist/veil-devd-<versionName>.apk, vm: dist/veil-vm-<versionName>.apk)
+# (devd: dist/veil-devd-<versionName>.apk, vm: dist/veil-vm-<versionName>.apk,
+#  vm-dev: dist/veil-vm-dev-<versionName>.apk)
 # (+ .idsig, the v4 signature that incremental installs and Microdroid use),
 # appends a line to ~/.local/state/veil/signing.log, and runs
 # scripts/check-release-apk.sh on Veil APKs.
@@ -25,7 +27,7 @@ set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 
 usage() {
-	echo "usage: $0 dev|prod|devd | --finish dev|prod|devd DIR [VIA]" >&2
+	echo "usage: $0 dev|prod|devd|vm|vm-dev | --finish dev|prod|devd|vm|vm-dev DIR [VIA]" >&2
 	exit 2
 }
 
@@ -42,6 +44,8 @@ finish() {
 	mkdir -p "$repo/dist"
 	if [[ $flavor == devd ]]; then
 		out=$repo/dist/veil-devd-$version.apk
+	elif [[ $flavor == vm-dev ]]; then
+		out=$repo/dist/veil-vm-dev-$version.apk
 	elif [[ $flavor == vm ]]; then
 		out=$repo/dist/veil-vm-$version.apk
 	else
@@ -57,25 +61,26 @@ finish() {
 		"$(date -Is)" "$via" "$(basename "$out")" "$sha" "$got" >> "$log"
 	echo "signed $out ($via)"
 
-	# devd and vm are not Veil: the Veil release check does not apply to them.
-	[[ $flavor == devd || $flavor == vm ]] && return 0
+	# devd and the VM hosts are not Veil: the Veil release check does not apply.
+	[[ $flavor == devd || $flavor == vm || $flavor == vm-dev ]] && return 0
 	[[ $flavor == dev ]] && check=(--expect-dev)
 	"$repo/scripts/run" --offline scripts/check-release-apk.sh "${check[@]}" "dist/$(basename "$out")"
 }
 
 if [[ ${1:-} == --finish ]]; then
 	[[ $# -ge 3 ]] || usage
-	[[ $2 == dev || $2 == prod || $2 == devd || $2 == vm ]] || usage
+	[[ $2 == dev || $2 == prod || $2 == devd || $2 == vm || $2 == vm-dev ]] || usage
 	finish "$2" "$3" "${4:-external}"
 	exit 0
 fi
 
 flavor=${1:-}
-[[ $flavor == dev || $flavor == prod || $flavor == devd || $flavor == vm ]] || usage
+[[ $flavor == dev || $flavor == prod || $flavor == devd || $flavor == vm || $flavor == vm-dev ]] || usage
 
 unsigned=$repo/android/app/build/outputs/apk/$flavor/release/app-$flavor-release-unsigned.apk
 [[ $flavor == devd ]] && unsigned=$repo/android/devd/build/outputs/apk/release/devd-release-unsigned.apk
 [[ $flavor == vm ]] && unsigned=$repo/android/vm/build/outputs/apk/release/vm-release-unsigned.apk
+[[ $flavor == vm-dev ]] && unsigned=$repo/android/vm/build/outputs/apk/dev/vm-dev-unsigned.apk
 [[ -f $unsigned ]] || { echo "no unsigned APK at $unsigned; run scripts/build $flavor first" >&2; exit 1; }
 : "${VEIL_KEYSTORE:?set VEIL_KEYSTORE to the keystore path}"
 : "${VEIL_KEYSTORE_PASSWORD:?set VEIL_KEYSTORE_PASSWORD}"

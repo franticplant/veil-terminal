@@ -46,7 +46,8 @@ class Profiles(context: Context) {
     /** Last connection time, 0 if never. */
     fun lastUsed(t: Target): Long = used.getLong(key(t), 0)
 
-    private fun key(t: Target) = "${t.username}@${t.host}:${t.port}"
+    private fun key(t: Target) =
+        "${t.username}@${t.host}:${t.port}" + (t.jump?.let { "/via-${it.host}:${it.port}" } ?: "")
 
     private fun sorted(list: List<Target>) = list.sortedByDescending { used.getLong(key(it), 0) }
 
@@ -63,6 +64,8 @@ class Profiles(context: Context) {
                     .put("startup", t.startup)
                     .put("reconnect", t.autoReconnect)
                     .put("classicalKex", t.allowClassicalKex)
+                    .put("jumpHost", t.jump?.host ?: "")
+                    .put("jumpPort", t.jump?.port ?: 22)
             )
         }
         prefs.edit().putString("list", arr.toString()).apply()
@@ -82,6 +85,15 @@ class Profiles(context: Context) {
                 startup = o.optString("startup"),
                 autoReconnect = o.optBoolean("reconnect"),
                 allowClassicalKex = o.optBoolean("classicalKex"),
+                jump =
+                    o.optString("jumpHost")
+                        .takeIf { it.isNotBlank() }
+                        ?.let {
+                            io.github.franticplant.veil.engine.JumpHost(
+                                it,
+                                o.optInt("jumpPort", 22),
+                            )
+                        },
             )
         }
     }

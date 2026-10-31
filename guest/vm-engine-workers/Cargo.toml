@@ -1,0 +1,24 @@
+[package]
+name = "veil-vm-engine-workers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+libc.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "rt-multi-thread", "sync", "time", "macros"] }
+russh.workspace = true
+veil-caps.workspace = true
+veil-engine = { path = "../../core/engine" }
+veil-engine-host = { path = "../engine-host" }
+veil-obs.workspace = true
+veil-protocol.workspace = true
+veil-wire.workspace = true
+
+[lints]
+workspace = true

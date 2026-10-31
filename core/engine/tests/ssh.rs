@@ -352,6 +352,8 @@ impl Frontend {
             size: Some(v1::TermSize { cols: 40, rows: 10 }),
             public_keys,
             allow_classical_kex: self.allow_classical,
+            connection_id: 0,
+            jump: None,
         }));
         match reply.body {
             Some(engine_msg::Body::SessionOpened(o)) => o.session_id,
@@ -619,6 +621,8 @@ fn bad_requests_are_refused() {
             size: Some(v1::TermSize { cols: 80, rows: 24 }),
             public_keys: vec![],
             allow_classical_kex: false,
+            connection_id: 0,
+            jump: None,
         },
         v1::OpenSession {
             host: "h".into(),
@@ -627,6 +631,8 @@ fn bad_requests_are_refused() {
             size: Some(v1::TermSize { cols: 80, rows: 24 }),
             public_keys: vec![],
             allow_classical_kex: false,
+            connection_id: 0,
+            jump: None,
         },
         v1::OpenSession {
             host: "h".into(),
@@ -638,6 +644,8 @@ fn bad_requests_are_refused() {
             }),
             public_keys: vec![],
             allow_classical_kex: false,
+            connection_id: 0,
+            jump: None,
         },
     ] {
         let reply = f.call(client_msg::Body::OpenSession(open));

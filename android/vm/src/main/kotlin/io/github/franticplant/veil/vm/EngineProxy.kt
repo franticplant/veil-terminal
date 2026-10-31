@@ -40,6 +40,7 @@ class EngineProxy(private val context: Context) {
         protectedVm: Boolean,
         memoryMiB: Int,
         diagnostics: Boolean,
+        layout: String,
     ): Array<ParcelFileDescriptor> {
         stop()
         this.protectedVm = protectedVm
@@ -54,7 +55,7 @@ class EngineProxy(private val context: Context) {
         val proxyWrite = down[1]
         val h =
             try {
-                VmEngine.start(context, protectedVm, memoryMiB, diagnostics)
+                VmEngine.start(context, protectedVm, memoryMiB, diagnostics, layout)
             } catch (e: Exception) {
                 listOf(appWrite, proxyRead, appRead, proxyWrite).forEach {
                     runCatching { it.close() }
@@ -108,7 +109,7 @@ class EngineProxy(private val context: Context) {
         totalConnections.incrementAndGet()
         relays.add(relay)
         try {
-            toGuest.write("$host\n$port\n".toByteArray())
+            toGuest.write("veil-broker-v1\n$host\n$port\n$connectionId\n".toByteArray())
             toGuest.flush()
             VmEngine.note("broker header sent #$connectionId")
             Thread {

@@ -4,6 +4,7 @@
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use russh::client;
 use russh::keys::{HashAlg, PublicKey, PublicKeyOrCertificate};
@@ -238,6 +239,80 @@ const MAX_SIGNATURE_BYTES: usize = 2048;
 /// Authenticates as `spec.user`: the session's public keys first (each
 /// signature asked of the frontend), then password or keyboard-interactive
 /// prompts.
+/// Performs one SSH transport handshake and authentication over an already
+/// connected stream. Jump hosts call this for each hop; the final call is the
+/// terminal session.
+pub(crate) async fn connect_stream(
+    stream: Box<dyn veil_caps::Connection>,
+    spec: &Spec,
+    env: &crate::session::Env,
+    prompter: &Arc<Prompter>,
+) -> Result<(client::Handle<Client>, Option<v1::ConnectionSecurity>), String> {
+    let mut preferred = russh::Preferred::DEFAULT.clone();
+    if !spec.allow_classical_kex {
+        preferred.kex = std::borrow::Cow::Owned(
+            preferred
+                .kex
+                .iter()
+                .filter(|k| {
+                    let n = k.as_ref();
+                    is_post_quantum(n) || n.starts_with("ext-info") || n.starts_with("kex-strict")
+                })
+                .cloned()
+                .collect(),
+        );
+    }
+    let config = Arc::new(client::Config {
+        inactivity_timeout: None,
+        keepalive_interval: Some(Duration::from_secs(30)),
+        keepalive_max: 4,
+        nodelay: true,
+        preferred,
+        ..Default::default()
+    });
+    let refusal = Arc::new(Mutex::new(None));
+    let negotiated = Arc::new(Mutex::new(None));
+    let handler = Client {
+        negotiated: negotiated.clone(),
+        prompter: prompter.clone(),
+        host: spec.host.clone(),
+        port: spec.port,
+        host_keys: env.host_keys.clone(),
+        refusal: refusal.clone(),
+    };
+    let mut handle = match client::connect_stream(config, stream, handler).await {
+        Ok(h) => h,
+        Err(e) => {
+            let refused = refusal.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(why) = refused {
+                return Err(why);
+            }
+            if let russh::Error::NoCommonAlgo {
+                kind: russh::AlgorithmKind::Kex,
+                theirs,
+                ..
+            } = &e
+                && !spec.allow_classical_kex
+            {
+                return Err(format!(
+                    "the server offers no post-quantum key exchange (it offers: {}); allow \
+                     classical key exchange for this host to connect anyway",
+                    theirs
+                        .iter()
+                        .filter(|k| !k.starts_with("ext-info") && !k.starts_with("kex-strict"))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            return Err(format!("SSH handshake failed: {e}"));
+        }
+    };
+    authenticate(&mut handle, prompter, spec).await?;
+    let security = negotiated.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    Ok((handle, security))
+}
+
 pub(crate) async fn authenticate(
     handle: &mut client::Handle<Client>,
     prompter: &Prompter,

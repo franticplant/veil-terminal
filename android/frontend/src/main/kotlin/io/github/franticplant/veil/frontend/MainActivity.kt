@@ -32,17 +32,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -71,13 +72,16 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import io.github.franticplant.veil.engine.ClipboardOffer
+import io.github.franticplant.veil.engine.JumpHost
 import io.github.franticplant.veil.engine.Prompt
 import io.github.franticplant.veil.engine.Session
 import io.github.franticplant.veil.engine.Target
@@ -97,7 +101,21 @@ import kotlinx.coroutines.withContext
  * [EngineHost.sessions].
  */
 class MainActivity : ComponentActivity() {
+    companion object {
+        @Volatile var current: MainActivity? = null
+    }
+
     private val inPip = mutableStateOf(false)
+
+    override fun onResume() {
+        super.onResume()
+        current = this
+    }
+
+    override fun onPause() {
+        if (current === this) current = null
+        super.onPause()
+    }
 
     override fun onPictureInPictureModeChanged(
         isInPictureInPictureMode: Boolean,
@@ -233,22 +251,18 @@ private fun VeilApp(host: EngineHost, profiles: Profiles, pip: Boolean) {
     // Covering the notch: only the keyboard pushes the terminal; text may sit under the cutout.
     val insets = if (coverCutout) WindowInsets.ime else WindowInsets.safeDrawing
     Column(Modifier.fillMaxSize().windowInsetsPadding(insets)) {
-        if (!immersive && !pip) {
+        // While the native terminal view is visible, the terminal screen owns
+        // the bar. Keeping it outside a native AndroidView lets the terminal
+        // cover it on some devices.
+        if (!pip && (showHosts || current == null)) {
             if (ui.tabsOnTop) {
                 SessionTabs(
                     sessions = sessions,
-                    current = if (showHosts) null else current,
+                    current = null,
                     onSelect = {
                         currentId = it.id
                         showHosts = false
                     },
-                    onHosts = { showHosts = true },
-                )
-            } else if (!showHosts && current != null) {
-                CompactSessionBar(
-                    current = current,
-                    count = sessions.size,
-                    onOpen = { showSessions = true },
                     onHosts = { showHosts = true },
                 )
             }
@@ -263,8 +277,15 @@ private fun VeilApp(host: EngineHost, profiles: Profiles, pip: Boolean) {
         } else {
             TerminalScreen(
                 session = current,
+                sessions = sessions,
                 prefs = host.uiPrefs,
                 pip = pip,
+                onSelect = {
+                    currentId = it.id
+                    showHosts = false
+                },
+                onHosts = { showHosts = true },
+                onSessions = { showSessions = true },
                 onEnterHover = { main?.enterHover() },
                 onGrid = { lastGrid = it },
                 onReconnect = {
@@ -366,54 +387,45 @@ private fun VeilApp(host: EngineHost, profiles: Profiles, pip: Boolean) {
 private fun SessionTabs(
     sessions: List<Session>,
     current: Session?,
+    modifier: Modifier = Modifier,
     onSelect: (Session) -> Unit,
     onHosts: () -> Unit,
 ) {
     val palette = LocalPalette.current
-    val chipColors =
-        FilterChipDefaults.filterChipColors(
-            containerColor = Color(palette.chrome),
-            labelColor = Color(palette.chromeText),
-            selectedContainerColor = Color(palette.chromeActive),
-            selectedLabelColor = Color(palette.chromeText),
-        )
     Row(
-        Modifier.fillMaxWidth()
+        modifier
+            .fillMaxWidth()
+            .heightIn(min = 44.dp)
             .background(Color(palette.chrome))
             .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 4.dp),
+            .padding(horizontal = 4.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FilterChip(
+        TabChip(
+            label = "Hosts",
             selected = current == null,
+            palette = palette,
             onClick = onHosts,
-            label = { Text("Hosts") },
-            colors = chipColors,
         )
         for (s in sessions) {
             val status by s.status.collectAsState()
-            FilterChip(
-                selected = s === current,
-                onClick = { onSelect(s) },
-                colors = chipColors,
-                label = {
-                    // The remote's title (sanitized by the engine), else where the session goes.
-                    val v by s.screenVersion.collectAsState()
-                    val title = remember(v) { synchronized(s.screen) { s.screen.title } }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(title.ifBlank { s.target.displayName }.take(32), maxLines = 1)
-                        status.security?.let { sec ->
-                            Text(
-                                if (sec.postQuantum) " PQ" else " classical",
-                                fontSize = 10.sp,
-                                color =
-                                    if (sec.postQuantum) Color(0xFF98C379) else Color(0xFFE5C07B),
-                            )
+            val v by s.screenVersion.collectAsState()
+            val title =
+                remember(v) { synchronized(s.screen) { s.screen.title } }
+                    .ifBlank { s.target.displayName }
+            TabChip(
+                label =
+                    buildString {
+                        append(title.take(32))
+                        status.security?.let {
+                            append(if (it.postQuantum) "  PQ" else "  classical")
                         }
-                    }
-                },
-                leadingIcon = {
+                    },
+                selected = s === current,
+                palette = palette,
+                onClick = { onSelect(s) },
+                leading = {
                     val color =
                         when (status.phase) {
                             SessionPhase.SESSION_PHASE_OPEN -> Color(0xFF98C379)
@@ -422,6 +434,36 @@ private fun SessionTabs(
                         }
                     Box(Modifier.size(8.dp).background(color, CircleShape))
                 },
+            )
+        }
+    }
+}
+
+@Composable
+private fun TabChip(
+    label: String,
+    selected: Boolean,
+    palette: Palette,
+    onClick: () -> Unit,
+    leading: (@Composable () -> Unit)? = null,
+) {
+    val background = if (selected) Color(palette.chromeActive) else Color(palette.chrome)
+    Surface(
+        color = background,
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.height(36.dp).clickable(onClick = onClick),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 10.dp).widthIn(max = 240.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            leading?.invoke()
+            Text(
+                label,
+                color = Color(palette.chromeText),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -872,18 +914,25 @@ private fun ProfileDialog(
     var hostName by remember { mutableStateOf(initial?.host ?: "") }
     var port by remember { mutableStateOf((initial?.port ?: 22).toString()) }
     var user by remember { mutableStateOf(initial?.username ?: "") }
+    var jumpHost by remember { mutableStateOf(initial?.jump?.host ?: "") }
+    var jumpPort by remember { mutableStateOf((initial?.jump?.port ?: 22).toString()) }
     var keyId by remember { mutableStateOf(initial?.keyId ?: "") }
     var startup by remember { mutableStateOf(initial?.startup ?: "") }
     var reconnect by remember { mutableStateOf(initial?.autoReconnect ?: false) }
     var classical by remember { mutableStateOf(initial?.allowClassicalKex ?: false) }
     val allKeys by keys.keys.collectAsState()
     val portNum = port.toIntOrNull()
+    val jumpPortNum = jumpPort.toIntOrNull()
     val valid =
         hostName.isNotBlank() &&
             !hostName.any { it.isWhitespace() } &&
             user.isNotBlank() &&
             portNum != null &&
-            portNum in 1..65535
+            portNum in 1..65535 &&
+            (jumpHost.isBlank() ||
+                (!jumpHost.any { it.isWhitespace() } &&
+                    jumpPortNum != null &&
+                    jumpPortNum in 1..65535))
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -916,6 +965,22 @@ private fun ProfileDialog(
                     label = { Text("Username") },
                     singleLine = true,
                 )
+                OutlinedTextField(
+                    jumpHost,
+                    { jumpHost = it.trim() },
+                    label = { Text("Jump host (optional bastion)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                )
+                if (jumpHost.isNotBlank()) {
+                    OutlinedTextField(
+                        jumpPort,
+                        { jumpPort = it.filter(Char::isDigit).take(5) },
+                        label = { Text("Jump host port") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    )
+                }
                 Text("Key (tried before the password)", style = MaterialTheme.typography.labelLarge)
                 Row(
                     Modifier.horizontalScroll(rememberScrollState()),
@@ -969,6 +1034,8 @@ private fun ProfileDialog(
                             startup.trim(),
                             reconnect,
                             classical,
+                            jump =
+                                if (jumpHost.isBlank()) null else JumpHost(jumpHost, jumpPortNum!!),
                         )
                     )
                 },
@@ -990,8 +1057,12 @@ private fun ProfileDialog(
 @Composable
 private fun TerminalScreen(
     session: Session,
+    sessions: List<Session>,
     prefs: UiPrefs,
     pip: Boolean,
+    onSelect: (Session) -> Unit,
+    onHosts: () -> Unit,
+    onSessions: () -> Unit,
     onEnterHover: () -> Unit,
     onGrid: (Pair<Int, Int>) -> Unit,
     onReconnect: () -> Unit,
@@ -1027,114 +1098,151 @@ private fun TerminalScreen(
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    TerminalView(ctx).apply {
-                        fontSizeSp = prefs.values.value.fontSizeSp
-                        onStickyConsumed = {
-                            stickyState[0] = false
-                            stickyState[1] = false
-                            stickyState[2] = false
-                        }
-                        onFontSizeChanged = { size -> prefs.update { it.copy(fontSizeSp = size) } }
-                        onPasteRequest = { pasteClipboard(ctx, this) }
-                        onSelectionChanged = { selecting = it }
-                    }
-                },
-                update = { v ->
-                    view = v
-                    v.onGridSize = { cols, rows ->
-                        onGrid(cols to rows)
-                        v.session?.resize(cols, rows)
-                    }
-                    v.session = session
-                    v.stickyCtrl = stickyState[0]
-                    v.stickyAlt = stickyState[1]
-                    v.stickyShift = stickyState[2]
-                    v.palette = Palette.byId(ui.theme)
-                },
-            )
-            if (selecting) {
-                val palette = LocalPalette.current
-                Row(
-                    Modifier.align(Alignment.TopCenter)
-                        .padding(8.dp)
-                        .background(Color(palette.chromeActive), MaterialTheme.shapes.medium)
-                        .padding(horizontal = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    TextButton(
-                        onClick = {
-                            view?.selectedText()?.let { text ->
-                                context
-                                    .getSystemService(ClipboardManager::class.java)
-                                    .setPrimaryClip(ClipData.newPlainText("terminal", text))
-                                Toast.makeText(
-                                        context,
-                                        "Copied ${text.length} characters",
-                                        Toast.LENGTH_SHORT,
-                                    )
-                                    .show()
+    val immersive = ui.fullscreen && !pip
+    val coverCutout = immersive && ui.coverCutout
+    val showBar = !pip && (ui.tabsOnTop || !coverCutout)
+    val barSpace = if (!showBar) 0.dp else if (ui.tabsOnTop) 44.dp else 48.dp
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            // Reserve the bar's space; the bar itself is drawn after the native
+            // terminal in the enclosing Box so a native view cannot cover it.
+            Spacer(Modifier.height(barSpace))
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        TerminalView(ctx).apply {
+                            fontSizeSp = prefs.values.value.fontSizeSp
+                            onStickyConsumed = {
+                                stickyState[0] = false
+                                stickyState[1] = false
+                                stickyState[2] = false
                             }
-                            view?.clearSelection()
+                            onFontSizeChanged = { size ->
+                                prefs.update { it.copy(fontSizeSp = size) }
+                            }
+                            onPasteRequest = { pasteClipboard(ctx, this) }
+                            onSelectionChanged = { selecting = it }
                         }
+                    },
+                    update = { v ->
+                        view = v
+                        v.onGridSize = { cols, rows ->
+                            onGrid(cols to rows)
+                            v.session?.resize(cols, rows)
+                        }
+                        v.session = session
+                        v.stickyCtrl = stickyState[0]
+                        v.stickyAlt = stickyState[1]
+                        v.stickyShift = stickyState[2]
+                        v.palette = Palette.byId(ui.theme)
+                    },
+                )
+                if (selecting) {
+                    val palette = LocalPalette.current
+                    Row(
+                        Modifier.align(Alignment.TopCenter)
+                            .padding(8.dp)
+                            .background(Color(palette.chromeActive), MaterialTheme.shapes.medium)
+                            .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Copy", color = Color(palette.chromeText))
+                        TextButton(
+                            onClick = {
+                                view?.selectedText()?.let { text ->
+                                    context
+                                        .getSystemService(ClipboardManager::class.java)
+                                        .setPrimaryClip(ClipData.newPlainText("terminal", text))
+                                    Toast.makeText(
+                                            context,
+                                            "Copied ${text.length} characters",
+                                            Toast.LENGTH_SHORT,
+                                        )
+                                        .show()
+                                }
+                                view?.clearSelection()
+                            }
+                        ) {
+                            Text("Copy", color = Color(palette.chromeText))
+                        }
+                        TextButton(onClick = { view?.selectAll() }) {
+                            Text("All", color = Color(palette.chromeText))
+                        }
+                        TextButton(onClick = { view?.clearSelection() }) {
+                            Text("✕", color = Color(palette.chromeText))
+                        }
                     }
-                    TextButton(onClick = { view?.selectAll() }) {
-                        Text("All", color = Color(palette.chromeText))
-                    }
-                    TextButton(onClick = { view?.clearSelection() }) {
-                        Text("✕", color = Color(palette.chromeText))
+                }
+                if (!ui.extraKeys && !pip) {
+                    // The keys bar is hidden: a small handle brings it back.
+                    Box(
+                        Modifier.align(Alignment.BottomEnd)
+                            .padding(6.dp)
+                            .size(32.dp)
+                            .background(
+                                Color(LocalPalette.current.chromeActive).copy(alpha = 0.35f),
+                                CircleShape,
+                            )
+                            .clickable { prefs.update { it.copy(extraKeys = true) } },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("▴", color = Color(LocalPalette.current.chromeText).copy(alpha = 0.6f))
                     }
                 }
             }
-            if (!ui.extraKeys && !pip) {
-                // The keys bar is hidden: a small handle brings it back.
-                Box(
-                    Modifier.align(Alignment.BottomEnd)
-                        .padding(6.dp)
-                        .size(32.dp)
-                        .background(
-                            Color(LocalPalette.current.chromeActive).copy(alpha = 0.35f),
-                            CircleShape,
-                        )
-                        .clickable { prefs.update { it.copy(extraKeys = true) } },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("▴", color = Color(LocalPalette.current.chromeText).copy(alpha = 0.6f))
-                }
-            }
-        }
-        // Redraw on every new frame.
-        LaunchedEffect(version) { view?.invalidate() }
+            // Redraw on every new frame.
+            LaunchedEffect(version) { view?.invalidate() }
 
-        if (status.phase != SessionPhase.SESSION_PHASE_OPEN) {
-            StatusLine(status.phase, status.detail, status.closed, onReconnect, onDismiss)
+            if (status.phase != SessionPhase.SESSION_PHASE_OPEN) {
+                StatusLine(status.phase, status.detail, status.closed, onReconnect, onDismiss)
+            }
+            if (ui.extraKeys && !pip) {
+                ExtraKeys(
+                    view = view,
+                    ctrl = stickyState[0],
+                    alt = stickyState[1],
+                    shift = stickyState[2],
+                    fullscreen = ui.fullscreen,
+                    rows = ui.keysRows,
+                    onCtrl = { stickyState[0] = !stickyState[0] },
+                    onAlt = { stickyState[1] = !stickyState[1] },
+                    onShift = { stickyState[2] = !stickyState[2] },
+                    onHide = { prefs.update { it.copy(extraKeys = false) } },
+                    onFullscreen = { prefs.update { it.copy(fullscreen = !it.fullscreen) } },
+                    onSettings = { settings = true },
+                    onHover = onEnterHover,
+                    onFontSize = { size ->
+                        view?.fontSizeSp = size
+                        view?.let { v -> prefs.update { it.copy(fontSizeSp = v.fontSizeSp) } }
+                    },
+                )
+            }
         }
-        if (ui.extraKeys && !pip) {
-            ExtraKeys(
-                view = view,
-                ctrl = stickyState[0],
-                alt = stickyState[1],
-                shift = stickyState[2],
-                fullscreen = ui.fullscreen,
-                rows = ui.keysRows,
-                onCtrl = { stickyState[0] = !stickyState[0] },
-                onAlt = { stickyState[1] = !stickyState[1] },
-                onShift = { stickyState[2] = !stickyState[2] },
-                onHide = { prefs.update { it.copy(extraKeys = false) } },
-                onFullscreen = { prefs.update { it.copy(fullscreen = !it.fullscreen) } },
-                onSettings = { settings = true },
-                onHover = onEnterHover,
-                onFontSize = { size ->
-                    view?.fontSizeSp = size
-                    view?.let { v -> prefs.update { it.copy(fontSizeSp = v.fontSizeSp) } }
-                },
-            )
+        if (showBar) {
+            if (ui.tabsOnTop) {
+                SessionTabs(
+                    sessions = sessions,
+                    current = session,
+                    modifier =
+                        Modifier.align(Alignment.TopStart)
+                            .fillMaxWidth()
+                            .zIndex(2f)
+                            .then(
+                                if (coverCutout)
+                                    Modifier.windowInsetsPadding(WindowInsets.safeDrawing)
+                                else Modifier
+                            ),
+                    onSelect = onSelect,
+                    onHosts = onHosts,
+                )
+            } else {
+                CompactSessionBar(
+                    current = session,
+                    count = sessions.size,
+                    onOpen = onSessions,
+                    onHosts = onHosts,
+                )
+            }
         }
     }
 
@@ -1587,6 +1695,23 @@ private fun SettingsDialog(prefs: UiPrefs, onDismiss: () -> Unit) {
                         "JVM, the lightest. Service: a Java process of its own. In app: inside Veil.",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                if (ui.engine == UiPrefs.EnginePlace.VM) {
+                    Text("VM layout", style = MaterialTheme.typography.labelLarge)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        for (l in UiPrefs.VmLayout.entries) {
+                            FilterChip(
+                                selected = ui.vmLayout == l,
+                                onClick = { prefs.update { it.copy(vmLayout = l) } },
+                                label = { Text(l.label) },
+                            )
+                        }
+                    }
+                    Text(
+                        "Applies at the next Veil start. Workers and tenants are experimental; " +
+                            "the matching guest payload or role packages must be installed.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 Text("VM guest memory", style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     for (mib in listOf(64, 96, 128, 192, 256)) {
@@ -1676,7 +1801,12 @@ private fun KeysDialog(keys: SshKeys, unlockedDefault: Boolean, onDismiss: () ->
     val context = LocalContext.current
     var name by remember { mutableStateOf("") }
     var query by remember { mutableStateOf("") }
-    var where by remember { mutableStateOf(SshKeys.Where.AUTO) }
+    val hasStrongBox = remember {
+        context.packageManager.hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
+    }
+    var where by remember {
+        mutableStateOf(if (hasStrongBox) SshKeys.Where.STRONGBOX else SshKeys.Where.TEE)
+    }
     var error by remember { mutableStateOf<String?>(null) }
     var deleting by remember { mutableStateOf<SshKeys.Key?>(null) }
     var whileUnlocked by remember { mutableStateOf(unlockedDefault) }
@@ -1716,7 +1846,7 @@ private fun KeysDialog(keys: SshKeys, unlockedDefault: Boolean, onDismiss: () ->
                                     SshKeys.Security.TEE -> "TEE"
                                     SshKeys.Security.SOFTWARE -> "software"
                                     SshKeys.Security.UNKNOWN -> "?"
-                                },
+                                } + if (k.authPerUse) " · biometric/sign" else " · legacy key",
                                 style = MaterialTheme.typography.labelSmall,
                             )
                         }
@@ -1757,18 +1887,37 @@ private fun KeysDialog(keys: SshKeys, unlockedDefault: Boolean, onDismiss: () ->
                             label = {
                                 Text(
                                     when (w) {
-                                        SshKeys.Where.AUTO -> "StrongBox if available"
-                                        SshKeys.Where.STRONGBOX -> "StrongBox only"
-                                        SshKeys.Where.TEE -> "TEE only"
+                                        SshKeys.Where.AUTO -> "StrongBox preferred"
+                                        SshKeys.Where.STRONGBOX -> "StrongBox required"
+                                        SshKeys.Where.TEE -> "TEE compatibility"
                                     }
                                 )
                             },
                         )
                     }
                 }
+                if (where == SshKeys.Where.TEE || !hasStrongBox) {
+                    Text(
+                        if (!hasStrongBox)
+                            "This device has no StrongBox. The key uses the TEE, which is still " +
+                                "hardware-backed, but is not the separate StrongBox secure element."
+                        else
+                            "TEE compatibility is selected. The key is still hardware-backed, but " +
+                                "it is not stored in the separate StrongBox secure element. StrongBox " +
+                                "is the default for new keys on this device.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(LocalPalette.current.chromeText),
+                    )
+                }
                 SettingSwitch("Usable only while the phone is unlocked", whileUnlocked) {
                     whileUnlocked = it
                 }
+                Text(
+                    "Each new key requires a fresh strong-biometric approval for every SSH " +
+                        "signature. Older keys are refused; recreate them to adopt the policy.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(LocalPalette.current.chromeText),
+                )
                 Button(
                     enabled = name.isNotEmpty(),
                     onClick = {

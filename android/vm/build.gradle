@@ -21,11 +21,11 @@ def cargoNdk = tasks.register('cargoNdk', Exec) {
     workingDir = repoRoot
     def args = ['cargo', 'ndk', '--platform', '34']
     rustAbis.each { args += ['-t', it] }
-    args += ['-o', rustOut.get().asFile.path, 'build', '--release', '--locked', '-p', 'veil-vm-probe', '-p', 'veil-vm-engine']
+    args += ['-o', rustOut.get().asFile.path, 'build', '--release', '--locked', '-p', 'veil-vm-probe', '-p', 'veil-vm-engine', '-p', 'veil-vm-engine-workers']
     commandLine args
     inputs.files(fileTree(repoRoot) {
         include 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'
-        include 'guest/vm-probe/**', 'guest/vm-engine/**'
+        include 'guest/vm-probe/**', 'guest/vm-engine/**', 'guest/vm-engine-workers/**'
         exclude '**/target/**'
     })
     inputs.property('abis', rustAbis.toList())
@@ -45,13 +45,22 @@ android {
         versionName = versionNameEnv.getOrElse('0.0.0-local')
     }
 
-    // No debug build type: the VM host is installed and updated like the rest
-    // of the set, always as a release build.
+    // Release is the only published VM host. The dev variant exists so the
+    // development control plane can run diagnostic commands in the probe
+    // payload; it is never built by the release workflow.
     buildTypes {
         release {
             minifyEnabled = true
             shrinkResources = true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            buildConfigField 'boolean', 'DEV_PROBE', 'false'
+        }
+        create('dev') {
+            initWith release
+            matchingFallbacks = ['release']
+            minifyEnabled = false
+            shrinkResources = false
+            buildConfigField 'boolean', 'DEV_PROBE', 'true'
         }
     }
 

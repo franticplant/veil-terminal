@@ -2517,6 +2517,7 @@ dependencies = [
  "veil-obs",
  "veil-protocol",
  "veil-term",
+ "veil-wire",
 ]
 
 [[package]]
@@ -2572,6 +2573,22 @@ dependencies = [
  "tokio",
  "veil-engine",
  "veil-engine-host",
+ "veil-obs",
+]
+
+[[package]]
+name = "veil-vm-engine-workers"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "russh",
+ "tokio",
+ "veil-caps",
+ "veil-engine",
+ "veil-engine-host",
+ "veil-obs",
+ "veil-protocol",
+ "veil-wire",
 ]
 
 [[package]]

@@ -1,10 +1,12 @@
 # Development control: devd and veil-ctl
 
 Veil's dev builds can be driven from a laptop through a typed API. There is
-no shell and no `exec`: every operation is a named method with declared,
-checked parameters. This page covers setting it up and the daily loop. The
-design and its reasons are in [design/0000](design/0000-bootstrap-proposal.md),
-section 5.
+no host shell and no host `exec`: every operation is a named method with
+declared, checked parameters. (The dev-only guest probe in
+[design/0005](design/0005-guest-decomposition.md) is separate: it runs
+inside Microdroid and cannot execute a guest shell either.) This page covers
+setting it up and the daily loop. The design and its reasons are in
+[design/0000](design/0000-bootstrap-proposal.md), section 5.
 
 ## The pieces
 
@@ -136,7 +138,14 @@ rings.
 
 Veil logs in with ECDSA P-256 keys kept in Android Keystore. They live in
 StrongBox when the phone has it, otherwise in the TEE, and the private key
-never leaves Keystore.
+never leaves Keystore. On a device with StrongBox, new keys default to
+**StrongBox required**; TEE remains available as an explicit compatibility
+choice and is labelled as such. New keys are generated with an auth-per-use policy:
+each signing operation needs a fresh strong-biometric approval via
+`BiometricPrompt` and a `CryptoObject` bound to that `Signature`. Device-PIN
+fallback is deliberately not allowed for signing. Keys created before this
+policy are shown as **legacy key** and are refused; recreate them to adopt the
+policy. A cooldown or OTP is application policy, not a Keystore guarantee.
 
 - **How a login is signed.** The engine never sees the key. When a server
   accepts the key, the engine asks the app's signer to sign. The signer
@@ -145,6 +154,12 @@ never leaves Keystore.
 - **On the phone.** Under Hosts → Keys you can create a key, copy its public
   key into the server's `~/.ssh/authorized_keys`, and choose it in the
   host's settings.
+- **Bastions.** Profiles and `sessions.open` accept an optional `jumpHost` and
+  `jumpPort`. The app prepares the bastion's TCP stream; the worker opens a
+  `direct-tcpip` channel to the final target. This first version shares the
+  target username and selected key with the bastion; per-hop identities are
+  follow-up work.
+
 - **From the laptop.** The methods are `keys.list`, `keys.create` and
   `keys.delete`. `sessions.open`, `profiles.save` and `scenario.run` take a
   `key=NAME` parameter.
@@ -192,6 +207,115 @@ The address is remembered from `pair`, or comes from `-a` or `$VEIL_ADDR`.
 Use `scripts/build` rather than a bare Gradle build: it sets the version from
 git. A bare build comes out as `0.0.0-local`, and the updater refuses it,
 because it never installs a downgrade.
+
+## Remote builds on keynest
+
+Heavy compilation can run on keynest under the existing rootless
+`tailmeshbuild` account, with persistent Cargo/Gradle/Android caches. Source is
+synced to a remote workspace; only the unsigned APKs come back. Signing stays
+local and the keystore never leaves this machine.
+
+```sh
+export VEIL_BUILD_HOST=tailmeshbuild@keynest
+export VEIL_BUILD_PORT=27015
+export VEIL_BUILD_KEY=$HOME/.ssh/agents-keynest
+
+scripts/remote-build --no-prime vm-dev
+scripts/remote-build --sign --install dev vm-dev
+```
+
+Defaults:
+
+```text
+remote source: /home/tailmeshbuild/src/veil-terminal
+remote caches: /home/tailmeshbuild/cache/veil
+jobs:          4
+```
+
+Use `--no-prime` after the Cargo cache has been primed once. Without it, the
+script runs `cargo fetch --locked` first because the notices task needs host
+crates that an Android-target build may not have downloaded. `--sign` signs
+locally; `--install` uses devd and installs `.vm` before the app.
+
+## Component logs
+
+`veil-ctl logs engine` reads the engine's own log ring. In the Workers layout
+the supervisor now merges entries from the components it owns:
+
+```text
+supervisor  session lifecycle and worker-start failures
+broker      accepted / waiting / handed-off network streams
+spawner     worker assignments (supervisor side)
+worker/*    the worker's local ring, forwarded over its control socket
+```
+
+Worker logs are still bounded by `veil_obs::LogRing` and by the same rule as
+the rest of the engine: messages never contain typed input, screen contents or
+secrets. The worker log pump is best-effort: if the control queue is full, the
+session continues and an entry may be dropped.
+
+`veil-ctl logs vm` remains the Microdroid console view. It shows the spawner
+and worker process start/exit lines, including reaping, which are below the
+engine protocol.
+
+```sh
+veil-ctl logs engine
+veil-ctl logs engine --grep worker
+veil-ctl logs vm --grep 'spawner\|reaped'
+```
+
+## VM layouts in the app
+
+The app's Settings → Engine section now carries a VM layout choice:
+
+- **Monolith (stable)** — the current one-payload engine.
+- **Workers (experimental)** — supervisor, broker and a pre-forked spawner
+  that forks one single-use worker process per session. The workers payload is
+  built into the dev `.vm`; the protocol's 16-session bound applies, but the
+  spawner can create and reap workers indefinitely across sequential sessions.
+- **Tenants (experimental)** — manager-native role tenants; requires the role
+  packages and the tenant host path.
+
+The choice is stored in `UiPrefs.vmLayout`, passed through
+`IVmHost.startEngineWithLayout`, and applied at the next app start. Selecting a
+layout whose backing payload/packages are missing fails explicitly through the
+normal VM failure path; it never silently falls back.
+
+## Guest diagnostics (dev VM only)
+
+The diagnostic payload is a separate `.so` in the `.vm` APK. Its command
+shell is compiled in only when the VM host is built with the `dev` build
+type; the release VM host refuses `vm.shell` with "diagnostic shell is not in
+this build". There is no exported activity, intent, or shell in the guest.
+The VM host service remains protected by the signature-level `VM_HOST`
+permission, and only devd exposes the shell.
+
+```sh
+scripts/build vm-dev
+VEIL_KEYSTORE=... VEIL_KEYSTORE_PASSWORD=... scripts/sign vm-dev
+veil-ctl update dist/veil-vm-dev-<version>.apk
+veil-ctl call vm.shell commands='env'
+veil-ctl call vm.shell commands='fork'
+veil-ctl call vm.shell commands='syscall 172'
+veil-ctl call vm.shell commands='dlopen /mnt/apk/lib/arm64-v8a/libveil_vm_engine.so'
+veil-ctl call vm.shell commands='host.tenant-lab-one'
+veil-ctl call vm.shell commands='host.tenant-lab'
+veil-ctl call vm.probeStop
+```
+
+The tenant-lab commands require the dev-only `worker1`/`worker2` packages to
+be installed in the same Android profile as `.vm`. They start one or two
+manager tenants and report UIDs, groups, capabilities, and cross-UID
+`kill`/`ptrace`/`setuid` results. The release `.vm` does not include the lab
+queries or assets.
+
+`vm.shell` keeps the probe VM running between calls; `vm.probe` is the
+one-shot report and stops it. The shell is a fixed menu plus generic
+`syscall`, `prctl`, `dlopen`, and `kill` probes. `exec` is available as a
+probe, but the guest denies it with `EACCES`: Microdroid does not let the
+payload execute a shell or helper binary. The probe's findings and the
+resulting guest layout are in
+[design/0005](design/0005-guest-decomposition.md).
 
 ## Metrics and memory
 

@@ -14,6 +14,8 @@
 mod counted;
 mod session;
 mod ssh;
+pub mod supervisor;
+pub mod worker;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -392,6 +394,23 @@ impl Connection {
             p @ 1..=65535 => p as u16,
             _ => return Err("invalid port".into()),
         };
+        let jump = match open.jump {
+            Some(j) => {
+                if j.host.is_empty()
+                    || j.host.len() > 255
+                    || j.host.chars().any(|c| c.is_control() || c.is_whitespace())
+                {
+                    return Err("invalid jump host".into());
+                }
+                let port = match j.port {
+                    0 => 22,
+                    p @ 1..=65535 => p as u16,
+                    _ => return Err("invalid jump port".into()),
+                };
+                Some(crate::worker::Hop { host: j.host, port })
+            }
+            None => None,
+        };
 
         if open.public_keys.len() > MAX_KEYS {
             return Err(format!("at most {MAX_KEYS} public keys"));
@@ -434,6 +453,8 @@ impl Connection {
         let spec = session::Spec {
             host: open.host,
             port,
+            connection_id: open.connection_id,
+            jump,
             user: open.username,
             allow_classical_kex: open.allow_classical_kex,
             keys,

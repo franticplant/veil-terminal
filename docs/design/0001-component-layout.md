@@ -21,7 +21,7 @@ itself does not change.
 | `core/obs` | Log ring, counters | Engine | Every component, exposed over its protocol |
 | `core/caps` | `Dialer`, `HostKeyStore` (traits) | Engine; frontend pins are the host-key authority | Traits in the guest; the implementations are Android brokers |
 | `guest/engine-host` | `serve()`: one engine on one stream | Shipped in the APK as `libveil_engine_host.so`, run by `HostBackend` over stdio | The Microdroid payload's core (vsock) |
-| `guest/vm-engine` | Microdroid payload: engine protocol on 5000 and host broker on 5001 | `.vm` APK payload | The protected guest |
+| `guest/vm-engine` | Microdroid payload: engine protocol on 5000 and host broker on 5001 | `.vm` APK payload | The protected guest; the experimental workers payload moves the broker to its own same-UID process |
 | `android/jni` | Byte pipe into the engine | App process (the "in app" and "service" backends) | Local fallback only |
 | `android/engine-client` | `EngineConnection`, `SessionRegistry`, `ScreenModel`, `LoginSigner`, `NativePipe`, `StreamPipe`, `VmBackend`, `NetBroker`, backends | App | App: coordinator and broker |
 | `android/vm` | AVF host, `VmHostService`, `EngineProxy`, VM metrics/logs; no `INTERNET` | `.vm` APK | `.vm` APK |
@@ -80,7 +80,14 @@ itself does not change.
 4. **Guest roles.** Split the engine into SSH and VT workers. The cut is
    between `core/engine` (SSH) and `core/term` (terminal state), joined by
    the same kind of framed stream. The first VM release still runs the
-   engine as one guest payload.
+   engine as one guest payload. The Microdroid probe in
+   [0005](0005-guest-decomposition.md) narrows this: the app payload cannot
+   exec, use seccomp/namespaces/cgroups, or change UID. A fork split is
+   therefore containment, not full authority isolation. If a privileged
+   launcher is available, UID/capability separation inside one VM is
+   possible through a privileged launcher or Android 17's built-in tenants;
+   on a stock app-only build neither is available automatically, and separate
+   VMs are the hard boundary. See 0005 before implementing the split.
 
 ## Not here yet
 

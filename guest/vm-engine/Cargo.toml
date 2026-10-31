@@ -14,6 +14,7 @@ libc.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "rt", "sync"] }
 veil-engine = { path = "../../core/engine" }
 veil-engine-host = { path = "../engine-host" }
+veil-obs.workspace = true
 
 [lints]
 workspace = true

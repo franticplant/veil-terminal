@@ -7,12 +7,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use russh::{ChannelMsg, Disconnect, client};
+use russh::{ChannelMsg, Disconnect};
 use tokio::sync::{mpsc, oneshot};
 use veil_protocol::{MAX_FRAMES_IN_FLIGHT, encode, v1};
 use veil_term::{TermEvent, Terminal};
 
-use crate::ssh::{self, Client};
+use crate::ssh;
 use veil_caps::Dialer;
 use veil_obs::{LogRing, SessionStats};
 
@@ -126,9 +126,12 @@ pub(crate) enum Command {
     Snapshot,
 }
 
+#[derive(Clone)]
 pub(crate) struct Spec {
     pub host: String,
     pub port: u16,
+    pub connection_id: u64,
+    pub jump: Option<crate::worker::Hop>,
     pub user: String,
     /// Accept a classical key exchange when the server has no post-quantum one.
     pub allow_classical_kex: bool,
@@ -165,7 +168,7 @@ async fn run_inner(
     prompter.state(v1::SessionPhase::Connecting, "").await;
     let dialed = env
         .dialer
-        .dial(&spec.host, spec.port)
+        .dial_with_connection(&spec.host, spec.port, spec.connection_id)
         .await
         .map_err(|e| format!("cannot connect to {}:{}: {e}", spec.host, spec.port))?;
     if let Some(peer) = dialed.peer {
@@ -182,73 +185,45 @@ async fn run_inner(
         prompter.stats.wire_to_remote.clone(),
     );
 
-    let mut preferred = russh::Preferred::DEFAULT.clone();
-    if !spec.allow_classical_kex {
-        // Post-quantum only: the hybrid ML-KEM exchange plus the extension
-        // markers (strict kex, ext-info) that are not key exchanges.
-        preferred.kex = std::borrow::Cow::Owned(
-            preferred
-                .kex
-                .iter()
-                .filter(|k| {
-                    let n = k.as_ref();
-                    ssh::is_post_quantum(n)
-                        || n.starts_with("ext-info")
-                        || n.starts_with("kex-strict")
-                })
-                .cloned()
-                .collect(),
-        );
-    }
-    let config = Arc::new(client::Config {
-        inactivity_timeout: None,
-        keepalive_interval: Some(Duration::from_secs(30)),
-        keepalive_max: 4,
-        nodelay: true,
-        preferred,
-        ..Default::default()
-    });
-    let refusal = Arc::new(Mutex::new(None));
-    let negotiated = Arc::new(Mutex::new(None));
-    let handler = Client {
-        negotiated: negotiated.clone(),
-        prompter: prompter.clone(),
-        host: spec.host.clone(),
-        port: spec.port,
-        host_keys: env.host_keys.clone(),
-        refusal: refusal.clone(),
+    let first_spec = match &spec.jump {
+        Some(jump) => Spec {
+            host: jump.host.clone(),
+            port: jump.port,
+            connection_id: spec.connection_id,
+            jump: None,
+            user: spec.user.clone(),
+            allow_classical_kex: spec.allow_classical_kex,
+            keys: spec.keys.clone(),
+            cols: spec.cols,
+            rows: spec.rows,
+        },
+        None => spec.clone(),
     };
-    let mut handle = match client::connect_stream(config, stream, handler).await {
-        Ok(h) => h,
-        Err(e) => {
-            let refused = refusal.lock().unwrap_or_else(|e| e.into_inner()).take();
-            if let Some(why) = refused {
-                return Err(why);
-            }
-            if let russh::Error::NoCommonAlgo {
-                kind: russh::AlgorithmKind::Kex,
-                theirs,
-                ..
-            } = &e
-                && !spec.allow_classical_kex
-            {
-                return Err(format!(
-                    "the server offers no post-quantum key exchange (it offers: {}); allow \
-                     classical key exchange for this host to connect anyway",
-                    theirs
-                        .iter()
-                        .filter(|k| !k.starts_with("ext-info") && !k.starts_with("kex-strict"))
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-            }
-            return Err(format!("SSH handshake failed: {e}"));
-        }
+    let mut jump_handle = None;
+    let (handle, negotiated) = if spec.jump.is_some() {
+        let (hop, _) = ssh::connect_stream(Box::new(stream), &first_spec, env, prompter).await?;
+        let channel = hop
+            .channel_open_direct_tcpip(spec.host.clone(), spec.port as u32, "127.0.0.1", 0)
+            .await
+            .map_err(|e| {
+                format!(
+                    "jump host cannot open a channel to {}:{}: {e}",
+                    spec.host, spec.port
+                )
+            })?;
+        let target_stream = crate::counted::Counted::new(
+            Box::new(channel.into_stream()),
+            prompter.stats.wire_from_remote.clone(),
+            prompter.stats.wire_to_remote.clone(),
+        );
+        let connected = ssh::connect_stream(Box::new(target_stream), &spec, env, prompter).await?;
+        jump_handle = Some(hop);
+        connected
+    } else {
+        ssh::connect_stream(Box::new(stream), &spec, env, prompter).await?
     };
 
     prompter.state(v1::SessionPhase::Authenticating, "").await;
-    ssh::authenticate(&mut handle, prompter, &spec).await?;
 
     let err = |what: &str| {
         let what = what.to_string();
@@ -274,7 +249,7 @@ async fn run_inner(
         .request_shell(true)
         .await
         .map_err(err("shell request failed"))?;
-    let security = negotiated.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let security = negotiated.clone();
     prompter.open(security).await;
 
     let mut term = Terminal::new(spec.cols, spec.rows);
@@ -366,6 +341,7 @@ async fn run_inner(
         prompter.event(v1::engine_msg::Body::Frame(frame)).await;
     }
     let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
+    drop(jump_handle);
     Ok(match exit_status {
         Some(s) => format!("the remote shell exited with status {s}"),
         None => ended,

@@ -31,31 +31,38 @@ class VmHostService : Service() {
             override fun probe(protectedVm: Boolean): String =
                 VmProbe.run(this@VmHostService, protectedVm).also { log(it) }
 
+            override fun probeShell(protectedVm: Boolean, commands: String): String =
+                if (!BuildConfig.DEV_PROBE) {
+                    "diagnostic shell is not in this build"
+                } else {
+                    VmProbe.shell(this@VmHostService, protectedVm, commands).also { log(it) }
+                }
+
+            override fun probeStop(): String {
+                val result = VmProbe.stop().also { log(it) }
+                if (engine == null) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+                return result
+            }
+
             override fun startEngine(
                 protectedVm: Boolean,
                 memoryMiB: Int,
                 diagnostics: Boolean,
                 client: IBinder,
             ): Array<ParcelFileDescriptor> =
-                synchronized(this@VmHostService) {
-                    engine?.let {
-                        if (it.hasActiveConnections()) {
-                            throw IllegalStateException("the VM engine still has active sessions")
-                        }
-                        it.stop()
-                        engine = null
-                    }
-                    linkClient(client)
-                    val proxy = EngineProxy(this@VmHostService)
-                    val pfds =
-                        proxy.start(
-                            protectedVm,
-                            memoryMiB.coerceIn(32, 1024),
-                            diagnostics,
-                        )
-                    engine = proxy
-                    pfds
-                }
+                startEngineInternal(protectedVm, memoryMiB, diagnostics, "monolith", client)
+
+            override fun startEngineWithLayout(
+                protectedVm: Boolean,
+                memoryMiB: Int,
+                diagnostics: Boolean,
+                layout: String,
+                client: IBinder,
+            ): Array<ParcelFileDescriptor> =
+                startEngineInternal(protectedVm, memoryMiB, diagnostics, layout, client)
 
             override fun dial(
                 host: String,
@@ -104,6 +111,28 @@ class VmHostService : Service() {
         ensureForeground()
         return START_NOT_STICKY
     }
+
+    private fun startEngineInternal(
+        protectedVm: Boolean,
+        memoryMiB: Int,
+        diagnostics: Boolean,
+        layout: String,
+        client: IBinder,
+    ): Array<ParcelFileDescriptor> =
+        synchronized(this) {
+            engine?.let {
+                if (it.hasActiveConnections()) {
+                    throw IllegalStateException("the VM engine still has active sessions")
+                }
+                it.stop()
+                engine = null
+            }
+            linkClient(client)
+            val proxy = EngineProxy(this)
+            val pfds = proxy.start(protectedVm, memoryMiB.coerceIn(32, 1024), diagnostics, layout)
+            engine = proxy
+            pfds
+        }
 
     private fun ensureForeground() {
         runCatching {
@@ -172,6 +201,7 @@ class VmHostService : Service() {
                 it.stop()
                 engine = null
             }
+            VmProbe.stop()
             unlinkClient()
         }
         super.onDestroy()

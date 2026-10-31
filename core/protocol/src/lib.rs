@@ -108,13 +108,17 @@ pub fn check_frame(f: &v1::Frame, prev: Option<(u32, u32)>) -> Result<(), String
                     row.index
                 ));
             }
-            if run.cells == 0 || run.col + run.cells > c {
+            let end = run
+                .col
+                .checked_add(run.cells)
+                .ok_or_else(|| format!("run overflow in row {}", row.index))?;
+            if run.cells == 0 || end > c {
                 return Err(format!("run outside row {}", row.index));
             }
-            let scalars = run.text.chars().count() as u32;
+            let scalars = run.text.chars().count();
             let per_cell = if wide { 2 } else { 1 };
-            let one_cluster = run.cells == per_cell && scalars >= 1;
-            if scalars * per_cell != run.cells && !one_cluster {
+            let one_cluster = run.cells as usize == per_cell && scalars >= 1;
+            if scalars.checked_mul(per_cell) != Some(run.cells as usize) && !one_cluster {
                 return Err(format!(
                     "run text {:?} does not match its {} cells in row {}",
                     run.text, run.cells, row.index
@@ -126,7 +130,7 @@ pub fn check_frame(f: &v1::Frame, prev: Option<(u32, u32)>) -> Result<(), String
                     ch as u32, row.index
                 ));
             }
-            next = run.col + run.cells;
+            next = end;
         }
     }
     Ok(())
@@ -225,6 +229,8 @@ mod tests {
                     size: Some(v1::TermSize { cols: 80, rows: 24 }),
                     public_keys: vec!["ecdsa-sha2-nistp256 AAAA".into()],
                     allow_classical_kex: false,
+                    connection_id: 0,
+                    jump: None,
                 })),
             }),
             encode(&v1::EngineMsg {
@@ -276,6 +282,27 @@ mod tests {
                 assert_eq!(decode_engine(&encode(&m)).unwrap(), m);
             }
         }
+    }
+
+    #[test]
+    fn frame_run_bounds_reject_overflow() {
+        let frame = v1::Frame {
+            session_id: 1,
+            seq: 1,
+            size: Some(v1::TermSize { cols: 80, rows: 24 }),
+            full: true,
+            rows: vec![v1::Row {
+                index: 0,
+                runs: vec![v1::Run {
+                    col: u32::MAX,
+                    cells: 2,
+                    text: "ab".into(),
+                    ..Default::default()
+                }],
+            }],
+            ..Default::default()
+        };
+        assert!(check_frame(&frame, None).is_err());
     }
 
     #[test]
