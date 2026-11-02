@@ -12,7 +12,7 @@
 # Caches are not in the image. Cargo's registry, the cargo target directory and
 # Gradle's caches are named volumes mounted at /cache by scripts/podman-run.
 
-FROM docker.io/library/debian@sha256:4876fdea29cac1a33a3195f1eb1952feb1fca7dd6dd00be3e2f1879cf20d34d2
+FROM docker.io/library/debian@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
