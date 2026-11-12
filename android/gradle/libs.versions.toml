@@ -2,7 +2,7 @@
 # (Rust toolchain, NDK, SDK packages) are pinned in build/Containerfile and
 # rust-toolchain.toml.
 [versions]
-agp = "9.5.0"
+agp = "9.5.1"
 kotlin = "2.4.21"
 protobufPlugin = "0.10.0"
 protobuf = "4.36.2"
