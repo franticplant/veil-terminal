@@ -4,7 +4,7 @@
 [versions]
 agp = "9.5.1"
 kotlin = "2.4.21"
-protobufPlugin = "0.10.0"
+protobufPlugin = "0.10.1"
 protobuf = "4.36.2"
 coroutines = "1.11.0"
 composeBom = "2026.09.00"
